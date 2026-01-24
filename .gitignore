@@ -10,3 +10,5 @@ wheels/
 .venv
 .env
 *docx
+chroma_db
+chroma_store
