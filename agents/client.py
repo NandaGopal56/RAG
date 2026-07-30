@@ -34,7 +34,7 @@ class AgentGateway:
         self._agents: Optional[Dict[str, BaseAgent]] = None
         self._supervisor: Optional[Supervisor] = None
 
-    def get_individual_agents(self) -> Dict[str, BaseAgent]:
+    async def get_individual_agents(self) -> Dict[str, BaseAgent]:
         if self._agents is None:
             log_event(logger, "AGENTS_INIT", component="gateway")
             self._agents = {
@@ -44,19 +44,19 @@ class AgentGateway:
             log_event(logger, "AGENTS_READY", agents=list(self._agents.keys()))
         return self._agents
 
-    def get_supervisor(self) -> Supervisor:
+    async def get_supervisor(self) -> Supervisor:
         if self._supervisor is None:
             log_event(logger, "SUPERVISOR_INIT", component="gateway")
-            self._supervisor = Supervisor(agents=self.get_individual_agents())
+            self._supervisor = Supervisor(agents=await self.get_individual_agents())
             log_event(logger, "SUPERVISOR_READY", supervisor_type=type(self._supervisor).__name__)
         return self._supervisor
 
-    def get_agent(self, agent_name: str) -> BaseAgent:
+    async def get_agent(self, agent_name: str) -> BaseAgent:
         log_event(logger, "AGENT_SELECT", agent=agent_name, level=logging.DEBUG)
         if agent_name == "supervisor":
-            return self.get_supervisor()
+            return await self.get_supervisor()
 
-        agents = self.get_individual_agents()
+        agents = await self.get_individual_agents()
         if agent_name not in agents:
             log_event(logger, "AGENT_UNKNOWN", agent=agent_name, level=logging.ERROR)
             raise KeyError(f"Unknown agent '{agent_name}'")
@@ -107,28 +107,22 @@ class AgentGateway:
     ) -> AsyncIterator[Dict[str, object]]:
         from agents.shared.logging import ensure_invocation_session
 
-        async with ensure_invocation_session(agent_name, thread_id, mode="stream"):
-            agent_logger = get_agent_logger(agent_name)
-            log_invoke_start(agent_logger, agent_name, thread_id=thread_id, mode="stream", task_preview=task)
-            if context:
-                log_node_state(agent_logger, "stream", context, label="context")
-            async for update in self.get_agent(agent_name).stream(
-                task=task,
-                thread_id=thread_id,
-                context=context,
-                config=config,
-            ):
-                node = update.get("node", "unknown")
-                node_update = update.get("update", {})
-                log_stream_update(
-                    agent_logger,
-                    agent_name,
-                    thread_id=thread_id,
-                    node=node,
-                    update_keys=list(node_update.keys()) if isinstance(node_update, dict) else None,
-                )
-                yield update
-            log_invoke_end(agent_logger, agent_name, thread_id=thread_id, mode="stream")
+        # async with ensure_invocation_session(agent_name, thread_id, mode="stream"):
+        agent_logger = get_agent_logger(agent_name)
+        log_invoke_start(agent_logger, agent_name, thread_id=thread_id, mode="stream", task_preview=task)
+        if context:
+            log_node_state(agent_logger, "stream", context, label="context")
+
+        agent = await self.get_agent(agent_name)
+
+        async for update in agent.stream(
+            task=task,
+            thread_id=thread_id,
+            context=context,
+            config=config,
+        ):
+            yield update
+            # log_invoke_end(agent_logger, agent_name, thread_id=thread_id, mode="stream")
 
     def save_graphs(self) -> None:
         artifacts = Path(__file__).parent / "artifacts"
@@ -153,11 +147,12 @@ class AgentGateway:
 
         log_event(logger, "GRAPHS_SAVED", path=str(artifacts))
 
-    def registered_agents(self) -> Dict[str, str]:
-        agents = self.get_individual_agents()
+    async def registered_agents(self) -> Dict[str, str]:
+        agents = await self.get_individual_agents()
+        supervisor = await self.get_supervisor()
         return {
             **{aid: agent.info.name for aid, agent in agents.items()},
-            "supervisor": self.get_supervisor().info.name,
+            "supervisor": supervisor.info.name,
         }
 
 

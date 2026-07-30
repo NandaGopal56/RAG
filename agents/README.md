@@ -23,10 +23,22 @@ Run interactive chat:
 uv run python -m agents --chat --agent supervisor
 ```
 
+Run interactive chat with streaming:
+
+```bash
+uv run python -m agents --chat --agent supervisor --mode stream
+```
+
 Send a single message to an individual agent:
 
 ```bash
 uv run python -m agents --agent personal --message "Say hello."
+```
+
+Send a message to an individual agent with streaming:
+
+```bash
+uv run python -m agents --agent personal --message "Say hello." --mode stream
 ```
 
 Send a message to an individual agent with a specific thread:
@@ -39,6 +51,12 @@ Send a message to the supervisor with a specific thread:
 
 ```bash
 uv run python -m agents --agent supervisor --thread-id 201 --message "Route this task to the right agent."
+```
+
+Send a message to the supervisor with streaming:
+
+```bash
+uv run python -m agents --agent supervisor --thread-id 201 --message "Route this task to the right agent." --mode stream
 ```
 
 Run smoke tests:

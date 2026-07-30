@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RunnableConfig
 
@@ -183,7 +183,7 @@ class PersonalAgent(BaseAgent):
                 result = await self.graph.ainvoke(merged_state, config=cfg)
 
             messages = list(result.get("messages", []))
-            from langchain_core.messages import AIMessage
+            
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage) and msg.content:
                     response = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -207,39 +207,34 @@ class PersonalAgent(BaseAgent):
         then streams all node updates.
         """
         cfg = config or RunnableConfig(configurable={"thread_id": thread_id})
-        async with ensure_invocation_session("personal", thread_id, mode="stream"):
-            log_invoke_start(logger, "personal", thread_id=thread_id, mode="stream", task_preview=task)
+#        async with ensure_invocation_session("personal", thread_id, mode="stream"):
+        log_invoke_start(logger, "personal", thread_id=thread_id, mode="stream", task_preview=task)
 
-            from agents.shared.memory import save_message_idempotent
-            await save_message_idempotent(thread_id, "user", task)
+        from agents.shared.memory import save_message_idempotent
+        await save_message_idempotent(thread_id, "user", task)
 
-            previous_state = await load_previous_state(self.graph, thread_id, "personal")
+        previous_state = await load_previous_state(self.graph, thread_id, "personal")
 
-            if previous_state is None:
-                log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
-                run_input = PersonalState(
-                    messages=[HumanMessage(content=task)],
-                    thread_id=thread_id,
-                )
-            else:
-                log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
-                new_state_values = {
-                    "messages": [HumanMessage(content=task)],
-                    "thread_id": thread_id,
-                }
-                run_input = merge_with_new_messages(previous_state, new_state_values)
+        if previous_state is None:
+            log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
+            run_input = PersonalState(
+                messages=[HumanMessage(content=task)],
+                thread_id=thread_id,
+            )
+        else:
+            log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
+            new_state_values = {
+                "messages": [HumanMessage(content=task)],
+                "thread_id": thread_id,
+            }
+            run_input = merge_with_new_messages(previous_state, new_state_values)
 
-            async for update in self.graph.astream(
-                run_input, config=cfg, stream_mode="updates"
-            ):
-                for node_name, node_update in update.items():
-                    log_stream_update(
-                        logger,
-                        "personal",
-                        thread_id=thread_id,
-                        node=node_name,
-                        update_keys=list(node_update.keys()) if isinstance(node_update, dict) else None,
-                    )
-                    yield {"node": node_name, "update": node_update}
+        async for message, metadata in self.graph.astream(
+            run_input,
+            config=cfg,
+            stream_mode="messages",
+        ):
+            if metadata.get("langgraph_node") == 'call_llm':
+                yield message.content if isinstance(message, AIMessage) else str(message.content)
 
-            log_invoke_end(logger, "personal", thread_id=thread_id, mode="stream")
+        #log_invoke_end(logger, "personal", thread_id=thread_id, mode="stream")

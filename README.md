@@ -87,6 +87,13 @@ uv run python -c "import kiro"
 
 This makes it easy to develop, test, and run individual parts of the stack without forcing everything into a single entry point.
 
+## System architecture
+
+The full layered architecture (HAL, perception, world model, cognition, skill
+registry, executor, orchestrator) and data-flow designs live in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Read it before adding hardware
+(e.g. an arm) or new robot capabilities.
+
 ## Project structure
 
 ```text
