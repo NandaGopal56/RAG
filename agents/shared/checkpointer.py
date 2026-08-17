@@ -8,7 +8,6 @@ Provides:
 """
 
 import asyncio
-import logging
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -58,7 +57,7 @@ def get_checkpointer(agent_id: str) -> AsyncSqliteSaver:
             log_event(
                 logger,
                 "CHECKPOINT_PUT",
-                level=logging.DEBUG,
+                level=10,
                 agent=agent_id,
                 thread=tid,
                 checkpoint_id=checkpoint.get("id"),
@@ -77,7 +76,7 @@ def get_checkpointer(agent_id: str) -> AsyncSqliteSaver:
             log_event(
                 logger,
                 "CHECKPOINT_PUT_WRITES",
-                level=logging.DEBUG,
+                level=10,
                 agent=agent_id,
                 thread=tid,
                 write_count=len(writes),
@@ -113,7 +112,7 @@ async def load_previous_state(
             return dict(state.values)
         return None
     except Exception as e:
-        log_event(logger, "STATE_LOAD_ERROR", level=logging.WARNING, agent=agent_id, thread=thread_id, error=str(e))
+        log_event(logger, "STATE_LOAD_ERROR", level=30, agent=agent_id, thread=thread_id, error=str(e))
         return None
 
 
@@ -126,7 +125,7 @@ def merge_with_new_messages(
         log_event(
             logger,
             "STATE_MERGE",
-            level=logging.DEBUG,
+            level=10,
             previous=None,
             new_message_count=len(new_state_values.get("messages", [])),
         )
@@ -139,7 +138,7 @@ def merge_with_new_messages(
     log_event(
         logger,
         "STATE_MERGE",
-        level=logging.DEBUG,
+        level=10,
         previous_message_count=len(previous_messages),
         new_message_count=len(new_messages),
     )
@@ -159,7 +158,7 @@ def merge_with_new_messages(
         log_event(
             logger,
             "STATE_MERGE_RESULT",
-            level=logging.DEBUG,
+            level=10,
             added_unique=len(unique_new_messages),
             total_messages=len(merged["messages"]),
         )

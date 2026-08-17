@@ -31,7 +31,6 @@ from agents.shared.logging import (
     log_event,
     log_invoke_end,
     log_invoke_start,
-    log_stream_update,
 )
 
 logger = get_agent_logger("personal", "graph")
@@ -236,5 +235,3 @@ class PersonalAgent(BaseAgent):
         ):
             if metadata.get("langgraph_node") == 'call_llm':
                 yield message.content if isinstance(message, AIMessage) else str(message.content)
-
-        #log_invoke_end(logger, "personal", thread_id=thread_id, mode="stream")

@@ -6,10 +6,13 @@ from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from agents.shared.logging import get_agent_logger, log_event, log_llm_result
 from agents.shared.models import get_llm
 from agents.shared.utils import get_formatted_recent_history
 
 from .prompts import PLANNER_PROMPT, PLANNER_REVISE_PROMPT
+
+logger = get_agent_logger("deep_research", "planner")
 
 
 @dataclass
@@ -30,6 +33,7 @@ async def make_plan(state, goal: str) -> ResearchPlan:
 
     Falls back to a minimal two-step plan if the LLM output cannot be parsed.
     """
+    log_event(logger, "PLAN_MAKE_START", goal=goal[:200])
     llm = get_llm(strong=True)
 
     history_limit = 7
@@ -47,6 +51,7 @@ async def make_plan(state, goal: str) -> ResearchPlan:
 
     data = _parse_plan_json(response.content)
     if data is None:
+        log_event(logger, "PLAN_MAKE_FALLBACK", goal=goal[:200])
         return ResearchPlan(
             goal=goal,
             steps=[
@@ -56,11 +61,13 @@ async def make_plan(state, goal: str) -> ResearchPlan:
             done_when="The goal is fully answered with supporting evidence.",
         )
 
-    return ResearchPlan(
+    plan = ResearchPlan(
         goal=goal,
         steps=data.get("steps", [f"Research: {goal}"]),
         done_when=data.get("done_when", "The goal is fully answered with supporting evidence."),
     )
+    log_event(logger, "PLAN_MAKE_DONE", goal=goal[:200], step_count=len(plan.steps))
+    return plan
 
 
 async def revise_plan(
@@ -75,6 +82,7 @@ async def revise_plan(
     Unaffected steps should remain unchanged. If parsing fails, the original
     plan is returned unchanged.
     """
+    log_event(logger, "PLAN_REVISE_START", goal=goal[:200], revision=revision_notes[:200])
     llm = get_llm(strong=True)
 
     existing_steps_text = "\n".join(
@@ -102,13 +110,16 @@ async def revise_plan(
 
     data = _parse_plan_json(response.content)
     if data is None:
+        log_event(logger, "PLAN_REVISE_FALLBACK", goal=goal[:200])
         return ResearchPlan(goal=goal, steps=existing_steps, done_when=done_when)
 
-    return ResearchPlan(
+    plan = ResearchPlan(
         goal=goal,
         steps=data.get("steps", existing_steps),
         done_when=data.get("done_when", done_when),
     )
+    log_event(logger, "PLAN_REVISE_DONE", goal=goal[:200], step_count=len(plan.steps))
+    return plan
 
 
 def _parse_plan_json(raw: str) -> Optional[dict]:

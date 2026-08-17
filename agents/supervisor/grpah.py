@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, AsyncIterator, Dict, Optional
 from agents.shared.logging import (
     get_agent_logger,
@@ -28,7 +27,6 @@ logger = get_agent_logger("supervisor", "graph")
 
 def build_supervisor_graph(agents: Dict[str, BaseAgent]):
     """Build and compile the supervisor's LangGraph."""
-    logger.info("Building supervisor graph for agents: %s", list(agents.keys()))
     log_event(logger, "GRAPH_BUILD", component="supervisor", agents=list(agents.keys()))
     g = StateGraph(SupervisorState)
 
@@ -105,7 +103,7 @@ class Supervisor(BaseAgent):
             log_event(logger, "INTERRUPT_CHECK", thread_id=thread_id, pending=pending, next_nodes=str(snapshot.next))
             return pending
         except Exception as e:
-            log_event(logger, "INTERRUPT_CHECK_ERROR", level=logging.WARNING, thread_id=thread_id, error=str(e))
+            log_event(logger, "INTERRUPT_CHECK_ERROR", level=30, thread_id=thread_id, error=str(e))
             return False
 
     async def _run(self, task: str, thread_id: str, config: Optional[RunnableConfig]):
