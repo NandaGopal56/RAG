@@ -11,9 +11,7 @@ import requests
 from dotenv import load_dotenv, find_dotenv
 from langchain_core.tools import tool
 from tavily import TavilyClient
-from agents.shared.logging import get_agent_logger, log_tool_call
-
-logger = get_agent_logger("tools", "tools")
+from agents.shared.logging import log_tool_call
 
 # =============================================================================
 # Configuration

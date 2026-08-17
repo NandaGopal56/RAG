@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import asyncio
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -13,6 +12,7 @@ from agents.personal.graph import PersonalAgent
 from agents.supervisor.grpah import Supervisor
 from agents.shared.logging import (
     get_agent_logger,
+    log_error,
     log_event,
     log_invoke_end,
     log_invoke_start,
@@ -52,13 +52,13 @@ class AgentGateway:
         return self._supervisor
 
     async def get_agent(self, agent_name: str) -> BaseAgent:
-        log_event(logger, "AGENT_SELECT", agent=agent_name, level=logging.DEBUG)
+        log_event(logger, "AGENT_SELECT", agent=agent_name, level=10)
         if agent_name == "supervisor":
             return await self.get_supervisor()
 
         agents = await self.get_individual_agents()
         if agent_name not in agents:
-            log_event(logger, "AGENT_UNKNOWN", agent=agent_name, level=logging.ERROR)
+            log_error(logger, "AGENT_UNKNOWN", agent=agent_name)
             raise KeyError(f"Unknown agent '{agent_name}'")
         return agents[agent_name]
 
@@ -93,8 +93,7 @@ class AgentGateway:
                 )
                 return result
             except Exception as e:
-                log_event(agent_logger, "INVOKE_ERROR", level=logging.ERROR, agent=agent_name, thread=thread_id, error=str(e))
-                agent_logger.exception("Exception while invoking agent %s", agent_name)
+                log_error(agent_logger, "INVOKE_ERROR", agent=agent_name, thread=thread_id, error=str(e))
                 raise
 
     async def stream(
@@ -107,22 +106,21 @@ class AgentGateway:
     ) -> AsyncIterator[Dict[str, object]]:
         from agents.shared.logging import ensure_invocation_session
 
-        # async with ensure_invocation_session(agent_name, thread_id, mode="stream"):
-        agent_logger = get_agent_logger(agent_name)
-        log_invoke_start(agent_logger, agent_name, thread_id=thread_id, mode="stream", task_preview=task)
-        if context:
-            log_node_state(agent_logger, "stream", context, label="context")
+        async with ensure_invocation_session(agent_name, thread_id, mode="stream"):
+            agent_logger = get_agent_logger(agent_name)
+            log_invoke_start(agent_logger, agent_name, thread_id=thread_id, mode="stream", task_preview=task)
+            if context:
+                log_node_state(agent_logger, "stream", context, label="context")
 
-        agent = await self.get_agent(agent_name)
+            agent = await self.get_agent(agent_name)
 
-        async for update in agent.stream(
-            task=task,
-            thread_id=thread_id,
-            context=context,
-            config=config,
-        ):
-            yield update
-            # log_invoke_end(agent_logger, agent_name, thread_id=thread_id, mode="stream")
+            async for update in agent.stream(
+                task=task,
+                thread_id=thread_id,
+                context=context,
+                config=config,
+            ):
+                yield update
 
     def save_graphs(self) -> None:
         artifacts = Path(__file__).parent / "artifacts"

@@ -273,6 +273,16 @@ def log_event(
     _emit(logger, level, message)
 
 
+def log_error(
+    logger: logging.Logger,
+    event: str,
+    **fields: Any,
+) -> None:
+    """Emit a structured ERROR log line with traceback info."""
+    message = _format_event_message(event, _enrich_fields(dict(fields)))
+    _emit(logger, logging.ERROR, message, mirror_session=True)
+
+
 def log_node_enter(
     logger: logging.Logger,
     node: str,
