@@ -45,7 +45,7 @@ async def invoke_conversation(
             yield word
 
 
-async def invoke_conversation_stream(
+async def stream_conversation(
     message: str,
     thread_id: str = "1",
     agent_name: str = "supervisor",
@@ -90,7 +90,7 @@ async def cli_chat(
 
         log_event(logger, "CLI_USER_INPUT", agent=agent_name, thread=thread_id, preview=user_input[:200])
         if stream_mode == "stream":
-            async for word in invoke_conversation_stream(user_input, thread_id, agent_name):
+            async for word in stream_conversation(user_input, thread_id, agent_name):
                 print(f"{word}", end="", flush=True)
                 log_event(logger, "CLI_STREAM_WORD", level=10, agent=agent_name, thread=thread_id, word=word)
             print("\n", end="")
@@ -133,7 +133,7 @@ async def main() -> None:
     else:
         log_event(logger, "CLI_SINGLE_START", agent=args.agent, message=args.message[:200], thread=args.thread_id)
         if args.mode == "stream":
-            async for word in invoke_conversation_stream(
+            async for word in stream_conversation(
                 args.message,
                 thread_id=args.thread_id,
                 agent_name=args.agent,

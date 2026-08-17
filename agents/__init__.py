@@ -1,6 +1,6 @@
 """Agents package."""
 
-__all__ = ["AgentProcessor", "create_service", "invoke_conversation"]
+__all__ = ["invoke_conversation"]
 
 
 def __getattr__(name: str):
@@ -9,13 +9,8 @@ def __getattr__(name: str):
     _logger = get_agent_logger("agents", "init")
     log_event(_logger, "LAZY_IMPORT", name=name)
 
-    if name in {"AgentProcessor", "create_service"}:
-        from .legacy.agent_processor import AgentProcessor, create_service
-
-        return {"AgentProcessor": AgentProcessor, "create_service": create_service}[name]
-
     if name == "invoke_conversation":
-        from .bot import invoke_conversation
+        from .__main__ import invoke_conversation
 
         return invoke_conversation
 
