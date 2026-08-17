@@ -194,14 +194,21 @@ class Supervisor(BaseAgent):
     ) -> AsyncIterator[Dict[str, Any]]:
         async with ensure_invocation_session("supervisor", thread_id, mode="stream"):
             run_input, cfg = await self._run(task, thread_id, config)
-            async for update in self._graph.astream(run_input, config=cfg, stream_mode="updates"):
-                for node_name, node_update in update.items():
-                    log_stream_update(
-                        logger,
-                        "supervisor",
-                        thread_id=thread_id,
-                        node=node_name,
-                        update_keys=list(node_update.keys()) if isinstance(node_update, dict) else None,
-                    )
-                    yield {"node": node_name, "update": node_update}
+
+            async for data in self.graph.astream(
+                run_input,
+                config=cfg,
+                stream_mode="messages",
+                subgraphs=True
+            ):
+                namespace: tuple = data[0]
+                data = data[1]
+
+                message = data[0]
+                metadata = data[1]
+
+                if namespace[0] if len(namespace) > 0 else namespace == 'personal':
+                    if metadata.get("langgraph_node") == 'call_llm':
+                        yield message.content if isinstance(message, AIMessage) else str(message.content)
+
             log_invoke_end(logger, "supervisor", thread_id=thread_id, mode="stream")
