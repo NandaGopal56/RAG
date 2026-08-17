@@ -78,7 +78,9 @@ class AgentGateway:
             if context:
                 log_node_state(agent_logger, "invoke", context, label="context")
             try:
-                result = await self.get_agent(agent_name).invoke(
+                agent = await self.get_agent(agent_name)
+
+                result = await agent.invoke(
                     task=task,
                     thread_id=thread_id,
                     context=context,
