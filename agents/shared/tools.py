@@ -11,7 +11,7 @@ import requests
 from dotenv import load_dotenv, find_dotenv
 from langchain_core.tools import tool
 from tavily import TavilyClient
-from agents.shared.logging import log_tool_call
+from agents.shared.logging import get_agent_logger
 
 # =============================================================================
 # Configuration
@@ -20,6 +20,8 @@ from agents.shared.logging import log_tool_call
 load_dotenv(find_dotenv())
 
 tavily_client = TavilyClient()
+
+logger = get_agent_logger("tools", "tools")
 
 
 # =============================================================================
@@ -32,7 +34,7 @@ def current_datetime() -> str:
     Get the current date and time.
     Useful for answering time-sensitive questions.
     """
-    log_tool_call("current_datetime")
+    logger.info("TOOL_CALL tool=current_datetime")
 
     return datetime.datetime.now().isoformat()
 
@@ -49,10 +51,7 @@ def calculator(expression: str) -> str:
         log(100)
     """
 
-    log_tool_call(
-        "calculator",
-        expression=expression,
-    )
+    logger.info("TOOL_CALL tool=calculator expression=%s", expression)
 
     allowed_names = {
         k: getattr(math, k)
@@ -89,10 +88,7 @@ def web_search(query: str) -> str:
     - Documentation lookup
     """
 
-    log_tool_call(
-        "web_search",
-        query=query,
-    )
+    logger.info("TOOL_CALL tool=web_search query=%s", query)
 
     try:
         result = tavily_client.search(
@@ -136,10 +132,7 @@ def extract_webpage(url: str) -> str:
     Useful after search when the agent wants details.
     """
 
-    log_tool_call(
-        "extract_webpage",
-        url=url,
-    )
+    logger.info("TOOL_CALL tool=extract_webpage url=%s", url)
 
     try:
         result = tavily_client.extract(
@@ -178,10 +171,7 @@ def weather(city: str) -> str:
     Uses Open-Meteo APIs.
     """
 
-    log_tool_call(
-        "weather",
-        city=city,
-    )
+    logger.info("TOOL_CALL tool=weather city=%s", city)
 
     try:
         geo_response = requests.get(
@@ -244,10 +234,7 @@ def python_repl(code: str) -> str:
     Use only in trusted environments.
     """
 
-    log_tool_call(
-        "python_repl",
-        code=code,
-    )
+    logger.info("TOOL_CALL tool=python_repl code=%s", code)
 
     stdout_buffer = io.StringIO()
 
@@ -273,10 +260,7 @@ def read_file(path: str) -> str:
     Read a text file.
     """
 
-    log_tool_call(
-        "read_file",
-        path=path,
-    )
+    logger.info("TOOL_CALL tool=read_file path=%s", path)
 
     try:
         with open(
@@ -307,10 +291,7 @@ def write_file(data: str) -> str:
     }
     """
 
-    log_tool_call(
-        "write_file",
-        data=data,
-    )
+    logger.info("TOOL_CALL tool=write_file data=%s", data)
 
     try:
         payload = json.loads(data)
@@ -342,10 +323,7 @@ def http_get(url: str) -> str:
     Useful for APIs.
     """
 
-    log_tool_call(
-        "http_get",
-        url=url,
-    )
+    logger.info("TOOL_CALL tool=http_get url=%s", url)
 
     try:
         response = requests.get(
@@ -372,10 +350,7 @@ def run_shell(command: str) -> str:
     Only expose this in trusted environments.
     """
 
-    log_tool_call(
-        "run_shell",
-        command=command,
-    )
+    logger.info("TOOL_CALL tool=run_shell command=%s", command)
 
     try:
         result = subprocess.run(
@@ -414,10 +389,7 @@ def document_search(query: str) -> str:
     - PgVector
     """
 
-    log_tool_call(
-        "document_search",
-        query=query,
-    )
+    logger.info("TOOL_CALL tool=document_search query=%s", query)
 
     return (
         f"Document search not implemented. "

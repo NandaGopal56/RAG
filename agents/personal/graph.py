@@ -8,8 +8,8 @@ from langgraph.types import RunnableConfig
 
 from agents.base import AgentInfo, BaseAgent
 from agents.shared.checkpointer import (
-    get_checkpointer, 
-    load_previous_state, 
+    get_checkpointer,
+    load_previous_state,
     merge_with_new_messages
 )
 from agents.personal.nodes import (
@@ -25,24 +25,12 @@ from agents.personal.nodes import (
     what_next,
 )
 from agents.personal.state import PersonalState
-from agents.shared.logging import (
-    get_agent_logger,
-    ensure_invocation_session,
-    log_event,
-    log_invoke_end,
-    log_invoke_start,
-)
+from agents.shared.logging import get_agent_logger, ensure_invocation_session
 
 logger = get_agent_logger("personal", "graph")
 
 
 def build_personal_graph(checkpointer=None):
-    """Build and compile the personal agent's LangGraph.
-
-    If `checkpointer` is None the compiled graph will use the default
-    behavior and inherit a parent graph's checkpointer when added as a
-    subgraph node. Pass an explicit checkpointer for standalone usage.
-    """
     g = StateGraph(PersonalState)
 
     # -- Nodes ----------------------------------------------------------------
@@ -61,7 +49,7 @@ def build_personal_graph(checkpointer=None):
     # -- Edges ----------------------------------------------------------------
     g.add_edge(START, "decide_steps")
 
-    # Fan-out: decide_steps → one or more context nodes (or straight to call_llm)
+    # Fan-out: decide_steps -> one or more context nodes (or straight to call_llm)
     g.add_conditional_edges(
         "decide_steps",
         pick_context_steps,
@@ -95,9 +83,9 @@ def build_personal_graph(checkpointer=None):
     g.add_edge("compress_history", END)
 
     if checkpointer is not None:
-        log_event(logger, "GRAPH_BUILD", component="personal", checkpointer=repr(checkpointer))
+        logger.info("GRAPH_BUILD component=personal checkpointer=%s", repr(checkpointer))
     graph = g.compile(checkpointer=checkpointer)
-    log_event(logger, "GRAPH_COMPILED", component="personal")
+    logger.info("GRAPH_COMPILED component=personal")
     return graph
 
 
@@ -135,12 +123,6 @@ class PersonalAgent(BaseAgent):
         return self._graph
 
     def get_compiled_graph(self, checkpointer=None):
-        """Return a compiled subgraph for embedding in a parent graph.
-
-        When `checkpointer` is None the compiled graph will inherit the
-        parent graph's checkpointer (recommended when added to the
-        supervisor graph).
-        """
         return build_personal_graph(checkpointer=checkpointer)
 
     async def invoke(
@@ -150,15 +132,9 @@ class PersonalAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
         config: Optional[RunnableConfig] = None,
     ) -> str:
-        """
-        Invoke the personal agent with persistent state restoration.
-        
-        Loads previous checkpoint for the thread_id, merges with new message,
-        then executes the graph.
-        """
         cfg = config or RunnableConfig(configurable={"thread_id": thread_id})
         async with ensure_invocation_session("personal", thread_id, mode="invoke"):
-            log_invoke_start(logger, "personal", thread_id=thread_id, mode="invoke", task_preview=task)
+            logger.info("INVOKE_START agent=personal thread=%s mode=invoke task=%s", thread_id, (task[:200] + "...") if len(task) > 200 else task)
 
             from agents.shared.memory import save_message_idempotent
             await save_message_idempotent(thread_id, "user", task)
@@ -166,14 +142,14 @@ class PersonalAgent(BaseAgent):
             previous_state = await load_previous_state(self.graph, thread_id, "personal")
 
             if previous_state is None:
-                log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
+                logger.info("STATE_INIT thread_id=%s source=new_session", thread_id)
                 initial_state = PersonalState(
                     messages=[HumanMessage(content=task)],
                     thread_id=thread_id,
                 )
                 result = await self.graph.ainvoke(initial_state, config=cfg)
             else:
-                log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
+                logger.info("STATE_MERGE thread_id=%s source=checkpoint", thread_id)
                 new_state_values = {
                     "messages": [HumanMessage(content=task)],
                     "thread_id": thread_id,
@@ -182,14 +158,14 @@ class PersonalAgent(BaseAgent):
                 result = await self.graph.ainvoke(merged_state, config=cfg)
 
             messages = list(result.get("messages", []))
-            
+
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage) and msg.content:
                     response = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    log_invoke_end(logger, "personal", thread_id=thread_id, mode="invoke", response_length=len(response))
+                    logger.info("INVOKE_END agent=personal thread=%s mode=invoke response_length=%s", thread_id, len(response))
                     return response
 
-            log_invoke_end(logger, "personal", thread_id=thread_id, mode="invoke", response_length=0)
+            logger.info("INVOKE_END agent=personal thread=%s mode=invoke response_length=0", thread_id)
             return ""
 
     async def stream(
@@ -199,15 +175,8 @@ class PersonalAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
         config: Optional[RunnableConfig] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """
-        Stream personal agent execution with persistent state restoration.
-        
-        Loads previous checkpoint for the thread_id, merges with new message,
-        then streams all node updates.
-        """
         cfg = config or RunnableConfig(configurable={"thread_id": thread_id})
-#        async with ensure_invocation_session("personal", thread_id, mode="stream"):
-        log_invoke_start(logger, "personal", thread_id=thread_id, mode="stream", task_preview=task)
+        logger.info("INVOKE_START agent=personal thread=%s mode=stream task=%s", thread_id, (task[:200] + "...") if len(task) > 200 else task)
 
         from agents.shared.memory import save_message_idempotent
         await save_message_idempotent(thread_id, "user", task)
@@ -215,13 +184,13 @@ class PersonalAgent(BaseAgent):
         previous_state = await load_previous_state(self.graph, thread_id, "personal")
 
         if previous_state is None:
-            log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
+            logger.info("STATE_INIT thread_id=%s source=new_session", thread_id)
             run_input = PersonalState(
                 messages=[HumanMessage(content=task)],
                 thread_id=thread_id,
             )
         else:
-            log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
+            logger.info("STATE_MERGE thread_id=%s source=checkpoint", thread_id)
             new_state_values = {
                 "messages": [HumanMessage(content=task)],
                 "thread_id": thread_id,

@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
-from agents.shared.logging import get_agent_logger, log_event
+from agents.shared.logging import get_agent_logger
 
 DB_PATH = Path(".storages") / "bot_data_v2.db"
 logger = get_agent_logger("storage", "storage")
@@ -56,7 +56,7 @@ async def init_db():
         );
         """)
         await db.commit()
-        log_event(logger, "DB_INIT", path=_database_path())
+        logger.info("DB_INIT path=%s", _database_path())
 
 
 # -------------------------------------------------------------

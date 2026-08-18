@@ -1,4 +1,17 @@
-"""Agent-specific logging helpers built on ``shared.logging``."""
+"""Agent-specific logging with automatic session mirroring.
+
+Usage::
+
+    from agents.shared.logging import get_agent_logger
+
+    logger = get_agent_logger("supervisor", "nodes")
+    logger.info("NODE_ENTER node=route_request thread_id=%s", tid)
+    logger.error("INVOKE_ERROR agent=%s error=%s", agent, err)
+
+Standard ``logger.info()`` / ``logger.error()`` / ``logger.debug()`` calls
+are automatically mirrored to the active invocation session file when a
+session context is active.
+"""
 
 from __future__ import annotations
 
@@ -16,19 +29,7 @@ from shared.logging import LOGS_DIR, get_logger
 SESSIONS_DIR = LOGS_DIR / "sessions"
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Per-agent aggregate log files (useful for debugging one component over time).
-AGENT_LOG_FILES: Dict[str, str] = {
-    "supervisor": "supervisor.log",
-    "personal": "personal.log",
-    "deep_research": "deep_research.log",
-    "tools": "tools.log",
-    "checkpointer": "checkpointer.log",
-    "storage": "storage.log",
-    "client": "supervisor.log",
-    "cli": "supervisor.log",
-}
-
-_STATE_TRUNCATE_LEN = 1200
+STATE_TRUNCATE_LEN = 1200
 _MESSAGE_LIST_KEYS = frozenset({"messages"})
 
 _session_logger = get_logger("agents.session", log_file="session.log")
@@ -37,6 +38,10 @@ _invocation_ctx: ContextVar[Optional["InvocationContext"]] = ContextVar(
 )
 _active_session_handler: Optional[logging.Handler] = None
 
+
+# ---------------------------------------------------------------------------
+# Invocation context (ContextVar-based, propagates through async tasks)
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class InvocationContext:
@@ -53,6 +58,69 @@ def get_invocation_context() -> Optional[InvocationContext]:
     """Return the active invocation context, if any."""
     return _invocation_ctx.get()
 
+
+# ---------------------------------------------------------------------------
+# Custom Logger that mirrors to the active session
+# ---------------------------------------------------------------------------
+
+class AgentLogger(logging.Logger):
+    """Standard logger that automatically mirrors writes to the session log."""
+
+    def _log_with_mirror(
+        self,
+        level: int,
+        msg: str,
+        args: tuple,
+        **kwargs: Any,
+    ) -> None:
+        super()._log(level, msg, args, **kwargs)
+        ctx = _invocation_ctx.get()
+        if ctx is not None:
+            if args:
+                try:
+                    rendered = msg % args
+                except (TypeError, ValueError):
+                    rendered = msg
+            else:
+                rendered = msg
+            _session_logger.log(level, f"[{self.name}] {rendered}")
+
+    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.DEBUG, msg, args)
+
+    def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.INFO, msg, args)
+
+    def warning(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.WARNING, msg, args)
+
+    def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.ERROR, msg, args)
+
+    def critical(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.CRITICAL, msg, args)
+
+    def exception(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        self._log_with_mirror(logging.ERROR, msg, args)
+
+
+# Keep a reference to the original factory so we can restore if needed
+_original_factory = logging.getLogRecordFactory()
+
+
+def _agent_log_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+    return _original_factory(*args, **kwargs)
+
+
+logging.setLogRecordFactory(_agent_log_record_factory)
+
+# Register AgentLogger so logging.getLogger() returns our subclass
+logging.setLoggerClass(AgentLogger)
+
+
+# ---------------------------------------------------------------------------
+# Session handler management
+# ---------------------------------------------------------------------------
 
 def _safe_path_token(value: str) -> str:
     return str(value).replace("/", "_").replace("\\", "_").replace(" ", "_")
@@ -91,68 +159,45 @@ def _detach_session_handler(handler: logging.Handler) -> None:
     _active_session_handler = None
 
 
-def _enrich_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
-    ctx = _invocation_ctx.get()
-    if ctx is None:
-        return fields
-    enriched = {
-        "invoke_id": ctx.invoke_id,
-        "root_agent": ctx.root_agent,
-        "thread": ctx.thread_id,
-    }
-    enriched.update(fields)
-    return enriched
-
-
-def _format_event_message(event: str, fields: Mapping[str, Any]) -> str:
-    parts = [f"EVENT={event}"]
-    for key, value in fields.items():
-        if value is None:
-            continue
-        if isinstance(value, dict):
-            parts.append(f"{key}={_format_details(value)}")
-        elif isinstance(value, (list, tuple)):
-            parts.append(f"{key}={json.dumps(value, default=str)}")
-        else:
-            parts.append(f"{key}={value}")
-    return " | ".join(parts)
-
-
-def _emit(
-    logger: logging.Logger,
-    level: int,
-    message: str,
-    *,
-    mirror_session: bool = True,
-) -> None:
-    """Write to the component logger and, when active, the invocation session file."""
-    logger.log(level, message)
-    if mirror_session and _invocation_ctx.get() is not None:
-        _session_logger.log(level, f"[{logger.name}] {message}")
-
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
 
 def get_agent_logger(
     agent_id: str,
     component: Optional[str] = None,
     *,
     level: int = logging.DEBUG,
-) -> logging.Logger:
+) -> AgentLogger:
     """Return a logger for *agent_id* writing to that agent's aggregate log file."""
+    agent_log_files: Dict[str, str] = {
+        "supervisor": "supervisor.log",
+        "personal": "personal.log",
+        "deep_research": "deep_research.log",
+        "tools": "tools.log",
+        "checkpointer": "checkpointer.log",
+        "storage": "storage.log",
+        "client": "supervisor.log",
+        "cli": "supervisor.log",
+    }
+
     if component:
         name = f"agents.{agent_id}.{component}"
     else:
         name = f"agents.{agent_id}"
-    log_file = AGENT_LOG_FILES.get(agent_id, f"{agent_id}.log")
-    return get_logger(name, log_file=log_file, level=level)
+    log_file = agent_log_files.get(agent_id, f"{agent_id}.log")
 
-
-def _format_details(details: Mapping[str, Any]) -> str:
-    if not details:
-        return "{}"
-    try:
-        return json.dumps(dict(details), default=str, ensure_ascii=False)
-    except Exception:
-        return repr(dict(details))
+    logger = get_logger(name, log_file=log_file, level=level)
+    # Replace with our AgentLogger if not already one
+    if not isinstance(logger, AgentLogger):
+        agent_logger = AgentLogger(name, level=level)
+        agent_logger.handlers = logger.handlers
+        agent_logger.propagate = logger.propagate
+        agent_logger.log_file_path = getattr(logger, "log_file_path", None)  # type: ignore[attr-defined]
+        # Cache in the logger registry so future getLogger() calls return it
+        logging.Logger.manager.loggerDict[name] = agent_logger  # type: ignore[attr-defined]
+        return agent_logger
+    return logger  # type: ignore[return-value]
 
 
 def sanitize_state_for_log(state: Mapping[str, Any]) -> Dict[str, Any]:
@@ -176,9 +221,9 @@ def sanitize_state_for_log(state: Mapping[str, Any]) -> Dict[str, Any]:
                 safe[key] = "[messages]"
             continue
 
-        if isinstance(value, str) and len(value) > _STATE_TRUNCATE_LEN:
+        if isinstance(value, str) and len(value) > STATE_TRUNCATE_LEN:
             safe[key] = (
-                value[:_STATE_TRUNCATE_LEN]
+                value[:STATE_TRUNCATE_LEN]
                 + f"... [truncated, total={len(value)}]"
             )
         else:
@@ -186,6 +231,10 @@ def sanitize_state_for_log(state: Mapping[str, Any]) -> Dict[str, Any]:
 
     return safe
 
+
+# ---------------------------------------------------------------------------
+# Invocation session context manager
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def invocation_session(
@@ -212,30 +261,16 @@ async def invocation_session(
         log_path=str(log_path),
     )
     token: Token = _invocation_ctx.set(ctx)
-    gateway_logger = get_agent_logger("client", "gateway")
+    gw = get_agent_logger("client", "gateway")
 
     try:
-        _emit(
-            gateway_logger,
-            logging.INFO,
-            _format_event_message(
-                "SESSION_START",
-                _enrich_fields(
-                    {
-                        "agent": root_agent,
-                        "mode": mode,
-                        "log_path": str(log_path),
-                    }
-                ),
-            ),
+        gw.info(
+            "SESSION_START invoke_id=%s agent=%s mode=%s log_path=%s",
+            invoke_id, root_agent, mode, log_path,
         )
         yield invoke_id
     finally:
-        _emit(
-            gateway_logger,
-            logging.INFO,
-            _format_event_message("SESSION_END", _enrich_fields({"agent": root_agent, "mode": mode})),
-        )
+        gw.info("SESSION_END agent=%s mode=%s", root_agent, mode)
         _invocation_ctx.reset(token)
         _detach_session_handler(handler)
 
@@ -259,214 +294,3 @@ async def ensure_invocation_session(
 
     async with invocation_session(agent_id, thread_id, mode=mode) as invoke_id:
         yield invoke_id
-
-
-def log_event(
-    logger: logging.Logger,
-    event: str,
-    *,
-    level: int = logging.INFO,
-    **fields: Any,
-) -> None:
-    """Emit a structured log line to the component log and active session."""
-    message = _format_event_message(event, _enrich_fields(dict(fields)))
-    _emit(logger, level, message)
-
-
-def log_error(
-    logger: logging.Logger,
-    event: str,
-    **fields: Any,
-) -> None:
-    """Emit a structured ERROR log line with traceback info."""
-    message = _format_event_message(event, _enrich_fields(dict(fields)))
-    _emit(logger, logging.ERROR, message, mirror_session=True)
-
-
-def log_node_enter(
-    logger: logging.Logger,
-    node: str,
-    *,
-    thread_id: Optional[str] = None,
-    state: Optional[Mapping[str, Any]] = None,
-    **context: Any,
-) -> None:
-    """Log the start of a graph node at INFO; dump input state at DEBUG."""
-    tid = thread_id or context.pop("thread_id", None)
-    log_event(
-        logger,
-        "NODE_ENTER",
-        node=node,
-        thread_id=tid,
-        context=_format_details(context) if context else None,
-    )
-    if state is not None:
-        log_node_state(logger, node, state, label="input_state")
-
-
-def log_node_exit(
-    logger: logging.Logger,
-    node: str,
-    *,
-    thread_id: Optional[str] = None,
-    result_keys: Optional[list[str]] = None,
-    **summary: Any,
-) -> None:
-    """Log the end of a graph node with a short result summary."""
-    fields: Dict[str, Any] = {"node": node, "thread_id": thread_id}
-    if result_keys is not None:
-        fields["result_keys"] = ",".join(result_keys)
-    fields.update(summary)
-    log_event(logger, "NODE_EXIT", **fields)
-
-
-def log_node_state(
-    logger: logging.Logger,
-    node: str,
-    state: Mapping[str, Any],
-    *,
-    label: str = "state",
-) -> None:
-    """Dump sanitized state at DEBUG."""
-    safe = sanitize_state_for_log(state)
-    try:
-        payload = json.dumps(safe, default=str, ensure_ascii=False)
-    except Exception:
-        payload = repr(safe)
-    message = f"STATE {node}.{label}: {payload}"
-    _emit(logger, logging.DEBUG, message)
-
-
-def log_route(
-    logger: logging.Logger,
-    source: str,
-    target: str,
-    *,
-    reason: str = "",
-    **details: Any,
-) -> None:
-    """Log a conditional-edge or router decision at INFO."""
-    log_event(
-        logger,
-        "ROUTE",
-        source=source,
-        target=target,
-        reason=reason or None,
-        details=_format_details(details) if details else None,
-    )
-
-
-def log_branch(
-    logger: logging.Logger,
-    node: str,
-    branch: str,
-    **details: Any,
-) -> None:
-    """Log an in-node branch decision at DEBUG."""
-    log_event(
-        logger,
-        "BRANCH",
-        level=logging.DEBUG,
-        node=node,
-        branch=branch,
-        details=_format_details(details) if details else None,
-    )
-
-
-def log_llm_result(
-    logger: logging.Logger,
-    node: str,
-    label: str,
-    payload: Mapping[str, Any],
-) -> None:
-    """Log parsed LLM JSON / structured output at DEBUG."""
-    try:
-        body = json.dumps(dict(payload), default=str, ensure_ascii=False)
-    except Exception:
-        body = repr(dict(payload))
-    message = f"STATE {node}.{label}: {body}"
-    _emit(logger, logging.DEBUG, message)
-
-
-def log_invoke_start(
-    logger: logging.Logger,
-    agent_id: str,
-    *,
-    thread_id: str,
-    mode: str = "invoke",
-    task_preview: str = "",
-    resumed: bool = False,
-) -> None:
-    """Log the start of an agent invoke/stream/resume cycle."""
-    preview = task_preview
-    if len(preview) > 200:
-        preview = preview[:200] + "..."
-    log_event(
-        logger,
-        "INVOKE_START",
-        agent=agent_id,
-        thread=thread_id,
-        mode=mode,
-        resumed=resumed,
-        task=preview or None,
-    )
-
-
-def log_invoke_end(
-    logger: logging.Logger,
-    agent_id: str,
-    *,
-    thread_id: str,
-    mode: str = "invoke",
-    response_length: Optional[int] = None,
-    interrupted: bool = False,
-    **extra: Any,
-) -> None:
-    """Log the end of an agent invoke/stream/resume cycle."""
-    log_event(
-        logger,
-        "INVOKE_END",
-        agent=agent_id,
-        thread=thread_id,
-        mode=mode,
-        response_length=response_length,
-        interrupted=interrupted,
-        details=_format_details(extra) if extra else None,
-    )
-
-
-def log_stream_update(
-    logger: logging.Logger,
-    agent_id: str,
-    *,
-    thread_id: str,
-    node: str,
-    update_keys: Optional[list[str]] = None,
-) -> None:
-    """Log a single streamed graph update at DEBUG."""
-    log_event(
-        logger,
-        "STREAM_UPDATE",
-        level=logging.DEBUG,
-        agent=agent_id,
-        thread=thread_id,
-        node=node,
-        update_keys=",".join(update_keys) if update_keys else None,
-    )
-
-
-def log_save(entity: str, action: str, **details: Any) -> None:
-    """Log a persistence write (message, tool call, checkpoint, etc.)."""
-    save_logger = get_agent_logger("storage", "saves")
-    log_event(save_logger, "SAVE", entity=entity, action=action, **details)
-
-
-def log_tool_call(tool_name: str, **kwargs: Any) -> None:
-    """Standardized tool-call logging."""
-    tool_logger = get_agent_logger("tools", "tools")
-    log_event(
-        tool_logger,
-        "TOOL_CALL",
-        tool=tool_name,
-        args=_format_details(kwargs),
-    )

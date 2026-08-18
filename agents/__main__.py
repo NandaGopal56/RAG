@@ -8,11 +8,7 @@ from dotenv import load_dotenv
 
 from agents.client import gateway
 from agents.shared.storage import create_thread, init_db
-from agents.shared.logging import (
-    get_agent_logger,
-    log_event,
-    log_invoke_start,
-)
+from agents.shared.logging import get_agent_logger
 
 load_dotenv()
 
@@ -34,7 +30,7 @@ async def invoke_conversation(
     thread_id: str = "1",
     agent_name: str = "supervisor",
 ) -> AsyncGenerator[str, None]:
-    log_invoke_start(logger, agent_name, thread_id=thread_id, mode="cli", task_preview=message)
+    logger.info("INVOKE_START agent=%s thread=%s mode=cli task=%s", agent_name, thread_id, (message[:200] + "...") if len(message) > 200 else message)
     response_text = await gateway.invoke(
         agent_name=agent_name,
         task=message,
@@ -50,7 +46,7 @@ async def stream_conversation(
     thread_id: str = "1",
     agent_name: str = "supervisor",
 ) -> AsyncGenerator[str, None]:
-    log_invoke_start(logger, agent_name, thread_id=thread_id, mode="cli", task_preview=message)
+    logger.info("INVOKE_START agent=%s thread=%s mode=cli task=%s", agent_name, thread_id, (message[:200] + "...") if len(message) > 200 else message)
 
     async for message in gateway.stream(
         agent_name=agent_name,
@@ -68,40 +64,40 @@ async def cli_chat(
     """Start an interactive chat with an agent."""
 
     mode_str = "stream" if stream_mode == "stream" else "invoke"
-    log_event(logger, "CLI_START", agent=agent_name, thread=thread_id, mode=mode_str)
+    logger.info("CLI_START agent=%s thread=%s mode=%s", agent_name, thread_id, mode_str)
     if thread_id == "1":
         thread_id = str(await create_thread("CLI session"))
 
     agents = await gateway.registered_agents()
-    log_event(logger, "CLI_AGENTS", agents=list(agents.keys()), thread=thread_id)
+    logger.info("CLI_AGENTS agents=%s thread=%s", list(agents.keys()), thread_id)
 
     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
-            log_event(logger, "CLI_INTERRUPT", agent=agent_name, thread=thread_id)
+            logger.info("CLI_INTERRUPT agent=%s thread=%s", agent_name, thread_id)
             break
 
         if not user_input:
             continue
         if user_input.lower() in {"exit", "quit"}:
-            log_event(logger, "CLI_EXIT", agent=agent_name, thread=thread_id)
+            logger.info("CLI_EXIT agent=%s thread=%s", agent_name, thread_id)
             break
 
-        log_event(logger, "CLI_USER_INPUT", agent=agent_name, thread=thread_id, preview=user_input[:200])
+        logger.info("CLI_USER_INPUT agent=%s thread=%s preview=%s", agent_name, thread_id, user_input[:200])
         if stream_mode == "stream":
             async for word in stream_conversation(user_input, thread_id, agent_name):
                 print(f"{word}", end="", flush=True)
-                log_event(logger, "CLI_STREAM_WORD", level=10, agent=agent_name, thread=thread_id, word=word)
+                logger.log(10, "CLI_STREAM_WORD agent=%s thread=%s word=%s", agent_name, thread_id, word)
             print("\n", end="")
-            log_event(logger, "CLI_STREAM_DONE", agent=agent_name, thread=thread_id)
+            logger.info("CLI_STREAM_DONE agent=%s thread=%s", agent_name, thread_id)
         else:
             response_accum = ""
             async for word in invoke_conversation(user_input, thread_id, agent_name):
                 response_accum += word
 
             print(f'{agent_name} Agent: {response_accum}', end='\n\n')
-            log_event(logger, "CLI_RESPONSE", agent=agent_name, thread=thread_id, response_length=len(response_accum))
+            logger.info("CLI_RESPONSE agent=%s thread=%s response_length=%s", agent_name, thread_id, len(response_accum))
 
 
 async def main() -> None:
@@ -131,7 +127,7 @@ async def main() -> None:
     if args.chat:
         await cli_chat(agent_name=args.agent, thread_id=args.thread_id, stream_mode=args.mode)
     else:
-        log_event(logger, "CLI_SINGLE_START", agent=args.agent, message=args.message[:200], thread=args.thread_id)
+        logger.info("CLI_SINGLE_START agent=%s message=%s thread=%s", args.agent, args.message[:200], args.thread_id)
         if args.mode == "stream":
             async for word in stream_conversation(
                 args.message,
@@ -139,7 +135,7 @@ async def main() -> None:
                 agent_name=args.agent,
             ):
                 print(f"{args.agent} Agent: {word}", end="", flush=True)
-                log_event(logger, "CLI_STREAM_WORD", level=10, agent=args.agent, thread=args.thread_id, word=word)
+                logger.log(10, "CLI_STREAM_WORD agent=%s thread=%s word=%s", args.agent, args.thread_id, word)
             print("\n", end="")
         else:
             response_accum = ""
@@ -150,7 +146,7 @@ async def main() -> None:
             ):
                 response_accum += token
 
-            log_event(logger, "CLI_SINGLE_RESULT", agent=args.agent, thread=args.thread_id, response_length=len(response_accum))
+            logger.info("CLI_SINGLE_RESULT agent=%s thread=%s response_length=%s", args.agent, args.thread_id, len(response_accum))
             print(f"{args.agent} Agent: {response_accum}")
 
 

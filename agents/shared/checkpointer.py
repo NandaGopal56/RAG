@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from agents.shared.logging import get_agent_logger, log_event
+from agents.shared.logging import get_agent_logger
 
 logger = get_agent_logger("checkpointer", "checkpointer")
 
@@ -54,13 +54,10 @@ def get_checkpointer(agent_id: str) -> AsyncSqliteSaver:
 
         async def logged_aput(config, checkpoint, metadata, new_versions):
             tid = config.get("configurable", {}).get("thread_id")
-            log_event(
-                logger,
-                "CHECKPOINT_PUT",
-                level=10,
-                agent=agent_id,
-                thread=tid,
-                checkpoint_id=checkpoint.get("id"),
+            logger.log(
+                10,
+                "CHECKPOINT_PUT agent=%s thread=%s checkpoint_id=%s",
+                agent_id, tid, checkpoint.get("id"),
             )
             return await orig_aput(config, checkpoint, metadata, new_versions)
 
@@ -73,14 +70,10 @@ def get_checkpointer(agent_id: str) -> AsyncSqliteSaver:
 
         async def logged_aput_writes(config, writes, task_id, task_path: str = ""):
             tid = config.get("configurable", {}).get("thread_id")
-            log_event(
-                logger,
-                "CHECKPOINT_PUT_WRITES",
-                level=10,
-                agent=agent_id,
-                thread=tid,
-                write_count=len(writes),
-                task_id=task_id,
+            logger.log(
+                10,
+                "CHECKPOINT_PUT_WRITES agent=%s thread=%s write_count=%s task_id=%s",
+                agent_id, tid, len(writes), task_id,
             )
             return await orig_aput_writes(config, writes, task_id, task_path)
 
@@ -88,7 +81,7 @@ def get_checkpointer(agent_id: str) -> AsyncSqliteSaver:
     except Exception:
         pass
 
-    log_event(logger, "CHECKPOINTER_READY", agent=agent_id, db_path=str(db_path))
+    logger.info("CHECKPOINTER_READY agent=%s db_path=%s", agent_id, str(db_path))
     return saver
 
 
@@ -107,12 +100,12 @@ async def load_previous_state(
         cfg = RunnableConfig(configurable={"thread_id": thread_id})
         state = await graph.aget_state(cfg)
         found = bool(state and state.values)
-        log_event(logger, "STATE_LOAD", agent=agent_id, thread=thread_id, found=found)
+        logger.info("STATE_LOAD agent=%s thread=%s found=%s", agent_id, thread_id, found)
         if state and state.values:
             return dict(state.values)
         return None
     except Exception as e:
-        log_event(logger, "STATE_LOAD_ERROR", level=30, agent=agent_id, thread=thread_id, error=str(e))
+        logger.warning("STATE_LOAD_ERROR agent=%s thread=%s error=%s", agent_id, thread_id, e)
         return None
 
 
@@ -122,12 +115,10 @@ def merge_with_new_messages(
 ) -> Dict[str, Any]:
     """Merge a loaded previous checkpoint with new incoming state values."""
     if previous_state is None:
-        log_event(
-            logger,
-            "STATE_MERGE",
-            level=10,
-            previous=None,
-            new_message_count=len(new_state_values.get("messages", [])),
+        logger.log(
+            10,
+            "STATE_MERGE previous=None new_message_count=%s",
+            len(new_state_values.get("messages", [])),
         )
         return new_state_values
 
@@ -135,12 +126,10 @@ def merge_with_new_messages(
     previous_messages = previous_state.get("messages", [])
     new_messages = new_state_values.get("messages", [])
 
-    log_event(
-        logger,
-        "STATE_MERGE",
-        level=10,
-        previous_message_count=len(previous_messages),
-        new_message_count=len(new_messages),
+    logger.log(
+        10,
+        "STATE_MERGE previous_message_count=%s new_message_count=%s",
+        len(previous_messages), len(new_messages),
     )
 
     if new_messages:
@@ -155,12 +144,10 @@ def merge_with_new_messages(
         ]
 
         merged["messages"] = list(previous_messages) + unique_new_messages
-        log_event(
-            logger,
-            "STATE_MERGE_RESULT",
-            level=10,
-            added_unique=len(unique_new_messages),
-            total_messages=len(merged["messages"]),
+        logger.log(
+            10,
+            "STATE_MERGE_RESULT added_unique=%s total_messages=%s",
+            len(unique_new_messages), len(merged["messages"]),
         )
     else:
         merged["messages"] = list(previous_messages)

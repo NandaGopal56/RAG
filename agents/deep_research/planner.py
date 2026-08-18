@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.shared.logging import get_agent_logger, log_event, log_llm_result
+from agents.shared.logging import get_agent_logger
 from agents.shared.models import get_llm
 from agents.shared.utils import get_formatted_recent_history
 
@@ -29,11 +29,7 @@ class ResearchPlan:
 
 
 async def make_plan(state, goal: str) -> ResearchPlan:
-    """Generate a research plan for the given confirmed goal.
-
-    Falls back to a minimal two-step plan if the LLM output cannot be parsed.
-    """
-    log_event(logger, "PLAN_MAKE_START", goal=goal[:200])
+    logger.info("PLAN_MAKE_START goal=%s", goal[:200])
     llm = get_llm(strong=True)
 
     history_limit = 7
@@ -51,7 +47,7 @@ async def make_plan(state, goal: str) -> ResearchPlan:
 
     data = _parse_plan_json(response.content)
     if data is None:
-        log_event(logger, "PLAN_MAKE_FALLBACK", goal=goal[:200])
+        logger.info("PLAN_MAKE_FALLBACK goal=%s", goal[:200])
         return ResearchPlan(
             goal=goal,
             steps=[
@@ -66,7 +62,7 @@ async def make_plan(state, goal: str) -> ResearchPlan:
         steps=data.get("steps", [f"Research: {goal}"]),
         done_when=data.get("done_when", "The goal is fully answered with supporting evidence."),
     )
-    log_event(logger, "PLAN_MAKE_DONE", goal=goal[:200], step_count=len(plan.steps))
+    logger.info("PLAN_MAKE_DONE goal=%s step_count=%s", goal[:200], len(plan.steps))
     return plan
 
 
@@ -77,12 +73,7 @@ async def revise_plan(
     done_when: str,
     revision_notes: str,
 ) -> ResearchPlan:
-    """Revise an existing plan in place based on user feedback.
-
-    Unaffected steps should remain unchanged. If parsing fails, the original
-    plan is returned unchanged.
-    """
-    log_event(logger, "PLAN_REVISE_START", goal=goal[:200], revision=revision_notes[:200])
+    logger.info("PLAN_REVISE_START goal=%s revision=%s", goal[:200], revision_notes[:200])
     llm = get_llm(strong=True)
 
     existing_steps_text = "\n".join(
@@ -110,7 +101,7 @@ async def revise_plan(
 
     data = _parse_plan_json(response.content)
     if data is None:
-        log_event(logger, "PLAN_REVISE_FALLBACK", goal=goal[:200])
+        logger.info("PLAN_REVISE_FALLBACK goal=%s", goal[:200])
         return ResearchPlan(goal=goal, steps=existing_steps, done_when=done_when)
 
     plan = ResearchPlan(
@@ -118,12 +109,11 @@ async def revise_plan(
         steps=data.get("steps", existing_steps),
         done_when=data.get("done_when", done_when),
     )
-    log_event(logger, "PLAN_REVISE_DONE", goal=goal[:200], step_count=len(plan.steps))
+    logger.info("PLAN_REVISE_DONE goal=%s step_count=%s", goal[:200], len(plan.steps))
     return plan
 
 
 def _parse_plan_json(raw: str) -> Optional[dict]:
-    """Parse planner JSON output, tolerating fenced markdown."""
     try:
         text = raw.strip()
         if text.startswith("```"):

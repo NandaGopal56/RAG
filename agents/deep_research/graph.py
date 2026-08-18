@@ -26,14 +26,7 @@ from .nodes import (
     plan_confirmation_router,
     reflect,
 )
-from agents.shared.logging import (
-    get_agent_logger,
-    ensure_invocation_session,
-    log_event,
-    log_invoke_end,
-    log_invoke_start,
-    log_stream_update,
-)
+from agents.shared.logging import get_agent_logger, ensure_invocation_session
 
 
 from .state import ResearchState
@@ -42,18 +35,6 @@ logger = get_agent_logger("deep_research", "graph")
 
 
 def build_research_graph(checkpointer=None):
-    """Build and compile the deep research graph.
-
-    Flow:
-        START -> entry_router
-              -> clarify_goal -> check_goal_confirmation
-                 -> clarify_goal / create_plan
-              -> create_plan -> check_plan_confirmation
-                 -> create_plan / execute_step
-              -> execute_step -> reflect
-                 -> execute_step / finish
-              -> finish -> END
-    """
     g = StateGraph(ResearchState)
 
     # Nodes
@@ -111,28 +92,11 @@ def build_research_graph(checkpointer=None):
 
     g.add_edge("finish", END)
 
-    log_event(logger, "GRAPH_COMPILED", component="deep_research")
+    logger.info("GRAPH_COMPILED component=deep_research")
     return g.compile(checkpointer=checkpointer)
 
 
 class DeepResearchAgent(BaseAgent):
-    """Multi-step research agent with explicit goal and plan confirmation loops.
-
-    High-level flow:
-        1. Clarify and refine the user's research goal.
-        2. Ask the user to explicitly confirm the goal.
-        3. Create a research plan from the confirmed goal.
-        4. Ask the user to explicitly confirm the plan.
-        5. Execute the plan autonomously.
-        6. Reflect after each step and finish when done.
-
-    Interrupt behaviour:
-        - `check_goal_confirmation` pauses the graph and waits for the user.
-        - `check_plan_confirmation` pauses the graph and waits for the user.
-        - On resume, `_run()` detects the pending interrupt and passes
-          `Command(resume=user_reply)` to the graph.
-    """
-
     def __init__(self):
         self._graph = None
 
@@ -152,26 +116,14 @@ class DeepResearchAgent(BaseAgent):
 
     @property
     def graph(self):
-        """Lazily construct the standalone graph with its own checkpointer."""
         if self._graph is None:
             self._graph = build_research_graph(get_checkpointer("deep_research"))
         return self._graph
 
     def get_compiled_graph(self, checkpointer=None):
-        """Return a compiled graph for supervisor use.
-
-        Args:
-            checkpointer: If True / supplied by the supervisor, the graph will
-                use the supervisor's persistence layer. If None, no persistence
-                is attached by this method.
-
-        Returns:
-            A compiled LangGraph graph instance.
-        """
         return build_research_graph(checkpointer=checkpointer)
 
     async def _is_interrupted(self, cfg: RunnableConfig) -> bool:
-        """Return True if the thread is currently paused at an interrupt."""
         try:
             snapshot = await self.graph.aget_state(cfg)
             return bool(snapshot.next)
@@ -184,17 +136,6 @@ class DeepResearchAgent(BaseAgent):
         thread_id: str,
         config: Optional[RunnableConfig] = None,
     ):
-        """Prepare the input for a standalone invoke()/stream() call.
-
-        Behaviour:
-            - Persist the user message.
-            - If the thread is paused at an interrupt, return
-              `Command(resume=task)` so the graph resumes from that interrupt.
-            - Otherwise load prior state and merge the new message into it.
-
-        Returns:
-            Tuple[run_input, cfg]
-        """
         cfg = config or RunnableConfig(configurable={"thread_id": thread_id})
 
         from agents.shared.memory import save_message_idempotent
@@ -202,15 +143,15 @@ class DeepResearchAgent(BaseAgent):
         await save_message_idempotent(thread_id, "user", task)
 
         if await self._is_interrupted(cfg):
-            log_invoke_start(logger, "deep_research", thread_id=thread_id, mode="invoke", task_preview=task, resumed=True)
+            logger.info("INVOKE_START agent=deep_research thread=%s mode=invoke task=%s resumed=True", thread_id, (task[:200] + "...") if len(task) > 200 else task)
             return Command(resume=task), cfg
 
-        log_invoke_start(logger, "deep_research", thread_id=thread_id, mode="invoke", task_preview=task)
+        logger.info("INVOKE_START agent=deep_research thread=%s mode=invoke task=%s", thread_id, (task[:200] + "...") if len(task) > 200 else task)
 
         previous_state = await load_previous_state(self.graph, thread_id, "deep_research")
 
         if previous_state is None:
-            log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
+            logger.info("STATE_INIT thread_id=%s source=new_session", thread_id)
             state = ResearchState(
                 messages=[HumanMessage(content=task)],
                 thread_id=thread_id,
@@ -233,7 +174,7 @@ class DeepResearchAgent(BaseAgent):
                 final_answer="",
             )
         else:
-            log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
+            logger.info("STATE_MERGE thread_id=%s source=checkpoint", thread_id)
             state = merge_with_new_messages(
                 previous_state,
                 {
@@ -251,7 +192,6 @@ class DeepResearchAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
         config: Optional[RunnableConfig] = None,
     ) -> str:
-        """Run the agent and return the latest assistant-visible output."""
         async with ensure_invocation_session("deep_research", thread_id, mode="invoke"):
             run_input, cfg = await self._run(task, thread_id, config)
             result = await self.graph.ainvoke(run_input, config=cfg)
@@ -259,22 +199,22 @@ class DeepResearchAgent(BaseAgent):
             pending = result.get("__interrupt__")
             if pending:
                 payload = pending[0].value if hasattr(pending[0], "value") else pending[0]
-                log_event(logger, "INTERRUPT_RAISED", thread_id=thread_id, payload_type=type(payload).__name__)
+                logger.info("INTERRUPT_RAISED thread_id=%s payload_type=%s", thread_id, type(payload).__name__)
                 if isinstance(payload, dict):
                     response = payload.get("message", str(payload))
                 else:
                     response = str(payload)
-                log_invoke_end(logger, "deep_research", thread_id=thread_id, mode="invoke", interrupted=True, response_length=len(response))
+                logger.info("INVOKE_END agent=deep_research thread=%s mode=invoke interrupted=True response_length=%s", thread_id, len(response))
                 return response
 
             for msg in reversed(list(result.get("messages", []))):
                 if isinstance(msg, AIMessage) and msg.content:
                     response = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    log_invoke_end(logger, "deep_research", thread_id=thread_id, mode="invoke", response_length=len(response))
+                    logger.info("INVOKE_END agent=deep_research thread=%s mode=invoke response_length=%s", thread_id, len(response))
                     return response
 
             final = result.get("final_answer", "")
-            log_invoke_end(logger, "deep_research", thread_id=thread_id, mode="invoke", response_length=len(final))
+            logger.info("INVOKE_END agent=deep_research thread=%s mode=invoke response_length=%s", thread_id, len(final))
             return final
 
     async def stream(
@@ -284,17 +224,13 @@ class DeepResearchAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
         config: Optional[RunnableConfig] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream graph node updates for the given task."""
         async with ensure_invocation_session("deep_research", thread_id, mode="stream"):
             run_input, cfg = await self._run(task, thread_id, config)
             async for update in self.graph.astream(run_input, config=cfg, stream_mode="updates"):
                 for node_name, node_update in update.items():
-                    log_stream_update(
-                        logger,
-                        "deep_research",
-                        thread_id=thread_id,
-                        node=node_name,
-                        update_keys=list(node_update.keys()) if isinstance(node_update, dict) else None,
+                    logger.debug(
+                        "STREAM_UPDATE agent=deep_research thread=%s node=%s update_keys=%s",
+                        thread_id, node_name, list(node_update.keys()) if isinstance(node_update, dict) else None,
                     )
                     yield {"node": node_name, "update": node_update}
-            log_invoke_end(logger, "deep_research", thread_id=thread_id, mode="stream")
+            logger.info("INVOKE_END agent=deep_research thread=%s mode=stream", thread_id)

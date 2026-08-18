@@ -1,15 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, Optional
-from agents.shared.logging import (
-    get_agent_logger,
-    ensure_invocation_session,
-    log_event,
-    log_invoke_end,
-    log_invoke_start,
-    log_node_state,
-    log_stream_update,
-)
+from agents.shared.logging import get_agent_logger, ensure_invocation_session
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -27,21 +19,21 @@ logger = get_agent_logger("supervisor", "graph")
 
 def build_supervisor_graph(agents: Dict[str, BaseAgent]):
     """Build and compile the supervisor's LangGraph."""
-    log_event(logger, "GRAPH_BUILD", component="supervisor", agents=list(agents.keys()))
+    logger.info("GRAPH_BUILD component=supervisor agents=%s", list(agents.keys()))
     g = StateGraph(SupervisorState)
 
     # -- Nodes ----------------------------------------------------------------
     g.add_node("route_request", make_route_request(agents))
     g.add_node("ask_user",      ask_user)
-    log_event(logger, "GRAPH_NODES_ADDED", component="supervisor", nodes=["route_request", "ask_user", *list(agents.keys())])
+    logger.info("GRAPH_NODES_ADDED component=supervisor nodes=%s", ["route_request", "ask_user", *list(agents.keys())])
 
     for agent_id, agent in agents.items():
         try:
             subgraph = agent.get_compiled_graph(checkpointer=True)
-            log_event(logger, "SUBGRAPH_COMPILED", agent_id=agent_id, source="standalone")
+            logger.info("SUBGRAPH_COMPILED agent_id=%s source=standalone", agent_id)
         except Exception:
             subgraph = agent.graph
-            log_event(logger, "SUBGRAPH_ATTACHED", agent_id=agent_id, source="existing_graph")
+            logger.info("SUBGRAPH_ATTACHED agent_id=%s source=existing_graph", agent_id)
         g.add_node(agent_id, subgraph)
 
     # -- Edges ----------------------------------------------------------------
@@ -59,7 +51,7 @@ def build_supervisor_graph(agents: Dict[str, BaseAgent]):
 
     checkpointer = get_checkpointer("supervisor")
     compiled = g.compile(checkpointer=checkpointer)
-    log_event(logger, "GRAPH_COMPILED", component="supervisor", checkpointer="supervisor")
+    logger.info("GRAPH_COMPILED component=supervisor checkpointer=supervisor")
     return compiled
 
 
@@ -86,51 +78,30 @@ class Supervisor(BaseAgent):
         return self._graph
 
     async def _pending_interrupt(self, thread_id: str, cfg: RunnableConfig) -> bool:
-        """
-        Check whether this thread is paused at an interrupt ANYWHERE in the
-        graph, including inside a subgraph node (e.g. deep_research's
-        check_plan_confirmation).
-
-        subgraphs=True is mandatory: without it, aget_state only reads the
-        supervisor's own top-level state and never sees an interrupt() raised
-        inside a child graph's checkpoint_ns.
-        """
         if not thread_id:
             return False
         try:
             snapshot = await self._graph.aget_state(cfg, subgraphs=True)
             pending = bool(snapshot.next)
-            log_event(logger, "INTERRUPT_CHECK", thread_id=thread_id, pending=pending, next_nodes=str(snapshot.next))
+            logger.info("INTERRUPT_CHECK thread_id=%s pending=%s next_nodes=%s", thread_id, pending, str(snapshot.next))
             return pending
         except Exception as e:
-            log_event(logger, "INTERRUPT_CHECK_ERROR", level=30, thread_id=thread_id, error=str(e))
+            logger.warning("INTERRUPT_CHECK_ERROR thread_id=%s error=%s", thread_id, e)
             return False
 
     async def _run(self, task: str, thread_id: str, config: Optional[RunnableConfig]):
-        """
-        Shared setup for invoke()/stream().
-
-        If the thread is paused at an interrupt anywhere in the graph
-        (including inside a subgraph), resume it with Command(resume=task)
-        using the SAME config — no new state dict. This is the correct
-        LangGraph resume pattern: LangGraph's own machinery delivers `task`
-        to the waiting interrupt() call.
-
-        Only when nothing is pending do we fall through to the normal
-        route_request path, which rebuilds state and classifies the intent.
-        """
         cfg = config or RunnableConfig(configurable={"thread_id": thread_id})
-        log_invoke_start(logger, "supervisor", thread_id=thread_id, mode="invoke", task_preview=task)
+        logger.info("INVOKE_START agent=supervisor thread=%s mode=invoke task=%s", thread_id, (task[:200] + "...") if len(task) > 200 else task)
 
         from agents.shared.memory import save_message_idempotent
         await save_message_idempotent(thread_id, "user", task)
 
         if await self._pending_interrupt(thread_id, cfg):
-            log_event(logger, "RESUME_INTERRUPT", thread_id=thread_id, reply_preview=(task[:200] + "...") if len(task) > 200 else task)
+            logger.info("RESUME_INTERRUPT thread_id=%s reply_preview=%s", thread_id, (task[:200] + "...") if len(task) > 200 else task)
             return Command(resume=task), cfg
 
         previous_state = await load_previous_state(self.graph, thread_id, "supervisor")
-        log_event(logger, "STATE_LOAD", thread_id=thread_id, found=bool(previous_state))
+        logger.info("STATE_LOAD thread_id=%s found=%s", thread_id, bool(previous_state))
 
         if previous_state is None:
             state = SupervisorState(
@@ -138,15 +109,15 @@ class Supervisor(BaseAgent):
                 thread_id=thread_id,
                 user_input=task,
             )
-            log_event(logger, "STATE_INIT", thread_id=thread_id, source="new_session")
+            logger.info("STATE_INIT thread_id=%s source=new_session", thread_id)
         else:
             state = merge_with_new_messages(previous_state, {
                 "messages":   [HumanMessage(content=task)],
                 "thread_id":  thread_id,
                 "user_input": task,
             })
-            log_event(logger, "STATE_MERGE", thread_id=thread_id, source="checkpoint")
-            log_node_state(logger, "supervisor", state, label="merged_state")
+            logger.info("STATE_MERGE thread_id=%s source=checkpoint", thread_id)
+            logger.debug("STATE supervisor.merged_state %s", state)
 
         return state, cfg
 
@@ -176,13 +147,13 @@ class Supervisor(BaseAgent):
             pending = result.get("__interrupt__")
             if pending:
                 payload = pending[0].value if hasattr(pending[0], "value") else pending[0]
-                log_event(logger, "INTERRUPT_RAISED", thread_id=thread_id, payload_type=type(payload).__name__)
+                logger.info("INTERRUPT_RAISED thread_id=%s payload_type=%s", thread_id, type(payload).__name__)
                 response = payload.get("message", str(payload)) if isinstance(payload, dict) else str(payload)
-                log_invoke_end(logger, "supervisor", thread_id=thread_id, mode="invoke", interrupted=True, response_length=len(response))
+                logger.info("INVOKE_END agent=supervisor thread=%s mode=invoke interrupted=True response_length=%s", thread_id, len(response))
                 return response
 
             response = await self._extract_response(result, thread_id)
-            log_invoke_end(logger, "supervisor", thread_id=thread_id, mode="invoke", response_length=len(response))
+            logger.info("INVOKE_END agent=supervisor thread=%s mode=invoke response_length=%s", thread_id, len(response))
             return response
 
     async def stream(
@@ -211,4 +182,4 @@ class Supervisor(BaseAgent):
                     if metadata.get("langgraph_node") == 'call_llm':
                         yield message.content if isinstance(message, AIMessage) else str(message.content)
 
-            log_invoke_end(logger, "supervisor", thread_id=thread_id, mode="stream")
+            logger.info("INVOKE_END agent=supervisor thread=%s mode=stream", thread_id)

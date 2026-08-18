@@ -13,14 +13,7 @@ from agents.shared.memory import (
     save_tool_call,
     save_tool_result,
 )
-from agents.shared.logging import (
-    get_agent_logger,
-    log_branch,
-    log_llm_result,
-    log_node_enter,
-    log_node_exit,
-    log_route,
-)
+from agents.shared.logging import get_agent_logger
 from agents.shared.models import get_llm
 from agents.shared.tools import research_tools
 from agents.shared.utils import get_formatted_recent_history
@@ -70,78 +63,62 @@ def _get_latest_human_text(state: ResearchState) -> str:
 # ============================================================================
 
 def entry_router(state: ResearchState) -> str:
-    """Route a fresh or resumed invocation to the correct graph stage.
-
-    Order matters:
-        1. If the plan is confirmed, research execution is already in progress.
-        2. Else if the goal is confirmed, the next stage is planning.
-        3. Otherwise continue / start the goal clarification loop.
-    """
     plan_confirmed = state.get("plan_confirmed", False)
     goal_confirmed = state.get("goal_confirmed", False)
 
     if plan_confirmed:
-        log_route(logger, "entry_router", "execute_step", reason="plan already confirmed", goal_confirmed=goal_confirmed, plan_confirmed=plan_confirmed)
+        logger.info("ROUTE source=entry_router target=execute_step reason=plan already confirmed goal_confirmed=%s plan_confirmed=%s", goal_confirmed, plan_confirmed)
         return "execute_step"
 
     if goal_confirmed:
-        log_route(logger, "entry_router", "create_plan", reason="goal confirmed but plan not confirmed", goal_confirmed=goal_confirmed, plan_confirmed=plan_confirmed)
+        logger.info("ROUTE source=entry_router target=create_plan reason=goal confirmed but plan not confirmed goal_confirmed=%s plan_confirmed=%s", goal_confirmed, plan_confirmed)
         return "create_plan"
 
-    log_route(logger, "entry_router", "clarify_goal", reason="goal not yet confirmed", goal_confirmed=goal_confirmed, plan_confirmed=plan_confirmed)
+    logger.info("ROUTE source=entry_router target=clarify_goal reason=goal not yet confirmed goal_confirmed=%s plan_confirmed=%s", goal_confirmed, plan_confirmed)
     return "clarify_goal"
 
 
 def goal_confirmation_router(state: ResearchState) -> str:
-    """Route after the goal confirmation interrupt."""
     goal_confirmed = state.get("goal_confirmed", False)
 
     if goal_confirmed:
-        log_route(logger, "goal_confirmation_router", "create_plan", reason="", goal_confirmed=goal_confirmed)
+        logger.info("ROUTE source=goal_confirmation_router target=create_plan reason= goal_confirmed=%s", goal_confirmed)
         return "create_plan"
 
-    log_route(logger, "goal_confirmation_router", "clarify_goal", reason="", goal_confirmed=goal_confirmed, revision_notes=state.get("goal_revision_notes", ""))
+    logger.info("ROUTE source=goal_confirmation_router target=clarify_goal reason= goal_confirmed=%s revision_notes=%s", goal_confirmed, state.get("goal_revision_notes", ""))
     return "clarify_goal"
 
 
 def plan_confirmation_router(state: ResearchState) -> str:
-    """Route after the plan confirmation interrupt."""
     plan_confirmed = state.get("plan_confirmed", False)
 
     if plan_confirmed:
-        log_route(logger, "plan_confirmation_router", "execute_step", reason="", plan_confirmed=plan_confirmed)
+        logger.info("ROUTE source=plan_confirmation_router target=execute_step reason= plan_confirmed=%s", plan_confirmed)
         return "execute_step"
 
-    log_route(logger, "plan_confirmation_router", "create_plan", reason="", plan_confirmed=plan_confirmed, revision_notes=state.get("plan_revision_notes", ""))
+    logger.info("ROUTE source=plan_confirmation_router target=create_plan reason= plan_confirmed=%s revision_notes=%s", plan_confirmed, state.get("plan_revision_notes", ""))
     return "create_plan"
 
 
 def execution_router(state: ResearchState) -> str:
-    """Route after reflection to either continue execution or finish.
-
-    Finish conditions:
-        - reflector explicitly marked research as done
-        - max iteration limit reached
-        - all plan steps already consumed
-    """
     is_done = state.get("is_done", False)
     iteration = state.get("iteration", 0)
     current_step = state.get("current_step", 0)
     plan = state.get("plan", [])
 
     if is_done:
-        log_route(logger, "execution_router", "finish", reason="reflector marked done", iteration=iteration, current_step=current_step, total_steps=len(plan))
+        logger.info("ROUTE source=execution_router target=finish reason=reflector marked done iteration=%s current_step=%s total_steps=%s", iteration, current_step, len(plan))
         return "finish"
 
     if iteration >= MAX_ITERATIONS:
-        log_route(logger, "execution_router", "finish", reason="max iterations reached", iteration=iteration, max_iterations=MAX_ITERATIONS)
+        logger.info("ROUTE source=execution_router target=finish reason=max iterations reached iteration=%s max_iterations=%s", iteration, MAX_ITERATIONS)
         return "finish"
 
     if current_step >= len(plan):
-        log_route(logger, "execution_router", "finish", reason="all plan steps consumed", current_step=current_step, total_steps=len(plan))
+        logger.info("ROUTE source=execution_router target=finish reason=all plan steps consumed current_step=%s total_steps=%s", current_step, len(plan))
         return "finish"
 
-    log_route(logger, "execution_router", "execute_step", reason="continue research", iteration=iteration, current_step=current_step, total_steps=len(plan))
+    logger.info("ROUTE source=execution_router target=execute_step reason=continue research iteration=%s current_step=%s total_steps=%s", iteration, current_step, len(plan))
     return "execute_step"
 
 
@@ -150,26 +127,7 @@ def execution_router(state: ResearchState) -> str:
 # ============================================================================
 
 async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Refine the research goal based on the original question and user feedback.
-
-    This node does not ask for final approval itself. Instead, it prepares the
-    latest goal draft and any open clarification questions, then hands off to
-    `check_goal_confirmation`, which pauses for explicit user confirmation.
-
-    Two modes are supported:
-        1. First pass:
-           - no goal exists yet, so the original user question is analysed
-             via `CLARIFIER_PROMPT`.
-        2. Revision pass:
-           - the user has responded to a goal confirmation prompt with either
-             extra context or corrections, so the goal is updated via
-             `GOAL_UPDATER_PROMPT`.
-
-    Returns:
-        State updates for `goal`, `clarifying_questions`, `goal_ready`, and
-        consumed clarification fields.
-    """
-    log_node_enter(logger, "clarify_goal", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=clarify_goal thread_id=%s", state.get("thread_id", ""))
 
     original_question = state.get("original_question", "")
     current_goal = state.get("goal", "")
@@ -184,7 +142,7 @@ async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str
     # First pass: no existing goal yet
     # ------------------------------------------------------------------
     if not current_goal:
-        log_branch(logger, "clarify_goal", "first_pass", has_current_goal=False, original_question=original_question)
+        logger.debug("BRANCH node=clarify_goal branch=first_pass has_current_goal=False original_question=%s", original_question)
 
         history_limit = 7
         conversation_history = get_formatted_recent_history(state=state, max_messages=history_limit)
@@ -208,13 +166,13 @@ async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str
                 "reason": "Fallback used due to parse failure.",
             },
         )
-        log_llm_result(logger, "clarify_goal", "clarifier_output", data)
+        logger.debug("STATE clarify_goal.clarifier_output %s", data)
 
         refined_goal = data.get("refined_goal", f"Research goal: {original_question}")
         questions = data.get("questions", []) or []
         goal_ready = bool(data.get("goal_ready", not questions))
 
-        log_branch(logger, "clarify_goal", "first_pass_result", goal_ready=goal_ready, question_count=len(questions))
+        logger.debug("BRANCH node=clarify_goal branch=first_pass_result goal_ready=%s question_count=%s", goal_ready, len(questions))
 
         return {
             "original_question": original_question,
@@ -231,7 +189,7 @@ async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str
     # ------------------------------------------------------------------
     user_feedback = goal_revision_notes or _get_latest_human_text(state)
 
-    log_branch(logger, "clarify_goal", "revision_pass", has_current_goal=True, has_goal_revision_notes=bool(goal_revision_notes))
+    logger.debug("BRANCH node=clarify_goal branch=revision_pass has_current_goal=True has_goal_revision_notes=%s", bool(goal_revision_notes))
 
     history_limit = 7
     conversation_history = get_formatted_recent_history(state=state, max_messages=history_limit)
@@ -262,13 +220,13 @@ async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str
             "goal_ready": True,
         },
     )
-    log_llm_result(logger, "clarify_goal", "goal_updater_output", data)
+    logger.debug("STATE clarify_goal.goal_updater_output %s", data)
 
     updated_goal = data.get("updated_goal", current_goal)
     questions = data.get("questions", []) or []
     goal_ready = bool(data.get("goal_ready", not questions))
 
-    log_branch(logger, "clarify_goal", "revision_pass_result", goal_ready=goal_ready, question_count=len(questions))
+    logger.debug("BRANCH node=clarify_goal branch=revision_pass_result goal_ready=%s question_count=%s", goal_ready, len(questions))
 
     return {
         "original_question": original_question,
@@ -282,23 +240,7 @@ async def clarify_goal(state: ResearchState, config: RunnableConfig) -> Dict[str
 
 
 async def check_goal_confirmation(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Pause for explicit user confirmation of the refined research goal.
-
-    First execution:
-        - Builds a user-facing confirmation message from the current goal and
-          any open clarification questions.
-        - Calls `interrupt(...)` to pause the graph.
-
-    On resume:
-        - The value returned by `interrupt()` is the user's reply.
-        - An LLM interprets whether the reply:
-            a) confirms the goal,
-            b) confirms the goal while adding extra context, or
-            c) provides corrections / context without confirming.
-        - If the reply is not a clear confirmation, the graph routes back to
-          `clarify_goal` with `goal_revision_notes`.
-    """
-    log_node_enter(logger, "check_goal_confirmation", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=check_goal_confirmation thread_id=%s", state.get("thread_id", ""))
 
     thread_id = (
         config.get("configurable", {}).get("thread_id", "")
@@ -324,8 +266,8 @@ async def check_goal_confirmation(state: ResearchState, config: RunnableConfig) 
     )
 
     await save_message_idempotent(thread_id, "assistant", message)
-    
-    log_branch(logger, "check_goal_confirmation", "interrupt", goal_ready=state.get("goal_ready", False), question_count=len(questions))
+
+    logger.debug("BRANCH node=check_goal_confirmation branch=interrupt goal_ready=%s question_count=%s", state.get("goal_ready", False), len(questions))
 
     user_reply = interrupt(
         {
@@ -337,7 +279,7 @@ async def check_goal_confirmation(state: ResearchState, config: RunnableConfig) 
     )
 
     user_reply_text = user_reply if isinstance(user_reply, str) else str(user_reply)
-    log_branch(logger, "check_goal_confirmation", "resumed", user_reply=user_reply_text)
+    logger.debug("BRANCH node=check_goal_confirmation branch=resumed user_reply=%s", user_reply_text)
 
     llm = get_llm(strong=True)
 
@@ -367,29 +309,26 @@ async def check_goal_confirmation(state: ResearchState, config: RunnableConfig) 
             "reason": "Fallback used due to parse failure.",
         },
     )
-    log_llm_result(logger, "check_goal_confirmation", "confirmation_parse", data)
+    logger.debug("STATE check_goal_confirmation.confirmation_parse %s", data)
 
     is_confirmed = bool(data.get("is_confirmed", False))
     revision_notes = (data.get("revision_notes") or "").strip()
 
     if is_confirmed:
         if revision_notes:
-            # Confirmed, but the user also added context. We treat it as
-            # confirmed and carry the context forward to planning. If you want
-            # a stricter loop, route back to clarify_goal here instead.
-            log_branch(logger, "check_goal_confirmation", "confirmed_with_context", revision_notes=revision_notes)
+            logger.debug("BRANCH node=check_goal_confirmation branch=confirmed_with_context revision_notes=%s", revision_notes)
             return {
                 "goal_confirmed": True,
                 "goal_revision_notes": revision_notes,
             }
 
-        log_branch(logger, "check_goal_confirmation", "confirmed")
+        logger.debug("BRANCH node=check_goal_confirmation branch=confirmed")
         return {
             "goal_confirmed": True,
             "goal_revision_notes": "",
         }
 
-    log_branch(logger, "check_goal_confirmation", "not_confirmed", revision_notes=revision_notes or user_reply_text)
+    logger.debug("BRANCH node=check_goal_confirmation branch=not_confirmed revision_notes=%s", revision_notes or user_reply_text)
     return {
         "goal_confirmed": False,
         "goal_revision_notes": revision_notes or user_reply_text,
@@ -401,16 +340,7 @@ async def check_goal_confirmation(state: ResearchState, config: RunnableConfig) 
 # ============================================================================
 
 async def create_plan(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Create or revise the research plan.
-
-    Behaviour:
-        - If `plan_revision_notes` exists, revise the existing plan in place.
-        - Otherwise generate a new plan from the confirmed goal.
-
-    This node does not persist a user-facing plan message. The plan is shown
-    to the user by `check_plan_confirmation`, which owns the plan review loop.
-    """
-    log_node_enter(logger, "create_plan", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=create_plan thread_id=%s", state.get("thread_id", ""))
 
     goal = state.get("goal", "")
     existing_plan = state.get("plan", [])
@@ -418,15 +348,12 @@ async def create_plan(state: ResearchState, config: RunnableConfig) -> Dict[str,
     plan_revision_notes = state.get("plan_revision_notes", "").strip()
     goal_revision_notes = state.get("goal_revision_notes", "").strip()
 
-    # If the user confirmed the goal and added context, but that context was
-    # not folded into the goal string, append it to the planning objective so
-    # the planner still sees it.
     planner_goal = goal
     if goal_revision_notes:
         planner_goal = f"{goal}\n\nAdditional confirmed context from user:\n{goal_revision_notes}"
 
     if existing_plan and plan_revision_notes:
-        log_branch(logger, "create_plan", "revise_existing_plan", existing_plan_len=len(existing_plan), has_revision_notes=True)
+        logger.debug("BRANCH node=create_plan branch=revise_existing_plan existing_plan_len=%s has_revision_notes=True", len(existing_plan))
         plan: ResearchPlan = await revise_plan(
             state=state,
             goal=planner_goal,
@@ -435,10 +362,10 @@ async def create_plan(state: ResearchState, config: RunnableConfig) -> Dict[str,
             revision_notes=plan_revision_notes,
         )
     else:
-        log_branch(logger, "create_plan", "make_new_plan", existing_plan_len=len(existing_plan), has_revision_notes=bool(plan_revision_notes))
+        logger.debug("BRANCH node=create_plan branch=make_new_plan existing_plan_len=%s has_revision_notes=%s", len(existing_plan), bool(plan_revision_notes))
         plan = await make_plan(state=state, goal=planner_goal)
 
-    log_branch(logger, "create_plan", "plan_ready", step_count=len(plan.steps), done_when=plan.done_when)
+    logger.debug("BRANCH node=create_plan branch=plan_ready step_count=%s done_when=%s", len(plan.steps), plan.done_when)
 
     return {
         "plan": plan.steps,
@@ -454,19 +381,7 @@ async def create_plan(state: ResearchState, config: RunnableConfig) -> Dict[str,
 
 
 async def check_plan_confirmation(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Pause for explicit user confirmation of the research plan.
-
-    First execution:
-        - Presents the current plan via interrupt.
-
-    On resume:
-        - Interprets the user's reply with an LLM.
-        - Handles three cases:
-            1. confirmed, no revision needed -> proceed to execution
-            2. confirmed, but revision needed -> revise plan and ask again
-            3. not confirmed -> revise plan and ask again
-    """
-    log_node_enter(logger, "check_plan_confirmation", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=check_plan_confirmation thread_id=%s", state.get("thread_id", ""))
 
     thread_id = (
         config.get("configurable", {}).get("thread_id", "")
@@ -486,7 +401,7 @@ async def check_plan_confirmation(state: ResearchState, config: RunnableConfig) 
 
     await save_message_idempotent(thread_id, "assistant", message)
 
-    log_branch(logger, "check_plan_confirmation", "interrupt", step_count=len(plan))
+    logger.debug("BRANCH node=check_plan_confirmation branch=interrupt step_count=%s", len(plan))
 
     user_reply = interrupt(
         {
@@ -499,7 +414,7 @@ async def check_plan_confirmation(state: ResearchState, config: RunnableConfig) 
     )
 
     user_reply_text = user_reply if isinstance(user_reply, str) else str(user_reply)
-    log_branch(logger, "check_plan_confirmation", "resumed", user_reply=user_reply_text)
+    logger.debug("BRANCH node=check_plan_confirmation branch=resumed user_reply=%s", user_reply_text)
 
     llm = get_llm(strong=True)
 
@@ -530,27 +445,27 @@ async def check_plan_confirmation(state: ResearchState, config: RunnableConfig) 
             "reason": "Fallback used due to parse failure.",
         },
     )
-    log_llm_result(logger, "check_plan_confirmation", "confirmation_parse", data)
+    logger.debug("STATE check_plan_confirmation.confirmation_parse %s", data)
 
     is_confirmed = bool(data.get("is_confirmed", False))
     revision_notes = (data.get("revision_notes") or "").strip()
     requires_plan_revision = bool(data.get("requires_plan_revision", False))
 
     if is_confirmed and not requires_plan_revision:
-        log_branch(logger, "check_plan_confirmation", "confirmed_no_revision", is_confirmed=is_confirmed, requires_plan_revision=requires_plan_revision)
+        logger.debug("BRANCH node=check_plan_confirmation branch=confirmed_no_revision is_confirmed=%s requires_plan_revision=%s", is_confirmed, requires_plan_revision)
         return {
             "plan_confirmed": True,
             "plan_revision_notes": "",
         }
 
     if is_confirmed and requires_plan_revision:
-        log_branch(logger, "check_plan_confirmation", "confirmed_but_revision_needed", revision_notes=revision_notes)
+        logger.debug("BRANCH node=check_plan_confirmation branch=confirmed_but_revision_needed revision_notes=%s", revision_notes)
         return {
             "plan_confirmed": False,
             "plan_revision_notes": revision_notes or user_reply_text,
         }
 
-    log_branch(logger, "check_plan_confirmation", "not_confirmed", revision_notes=revision_notes or user_reply_text)
+    logger.debug("BRANCH node=check_plan_confirmation branch=not_confirmed revision_notes=%s", revision_notes or user_reply_text)
     return {
         "plan_confirmed": False,
         "plan_revision_notes": revision_notes or user_reply_text,
@@ -562,8 +477,7 @@ async def check_plan_confirmation(state: ResearchState, config: RunnableConfig) 
 # ============================================================================
 
 async def execute_step(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Execute the current plan step using the research tool loop."""
-    log_node_enter(logger, "execute_step", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=execute_step thread_id=%s", state.get("thread_id", ""))
 
     goal = state.get("goal", "")
     plan = state.get("plan", [])
@@ -573,7 +487,7 @@ async def execute_step(state: ResearchState, config: RunnableConfig) -> Dict[str
     iteration = state.get("iteration", 0)
 
     if current_idx >= len(plan):
-        log_branch(logger, "execute_step", "no_remaining_steps", current_idx=current_idx, total_steps=len(plan))
+        logger.debug("BRANCH node=execute_step branch=no_remaining_steps current_idx=%s total_steps=%s", current_idx, len(plan))
         return {"is_done": True}
 
     current_step_text = plan[current_idx]
@@ -583,7 +497,7 @@ async def execute_step(state: ResearchState, config: RunnableConfig) -> Dict[str
         else "(none yet)"
     )
 
-    log_branch(logger, "execute_step", "run_step", current_idx=current_idx, current_step=current_step_text, iteration=iteration)
+    logger.debug("BRANCH node=execute_step branch=run_step current_idx=%s current_step=%s iteration=%s", current_idx, current_step_text, iteration)
 
     prompt = EXECUTOR_PROMPT.format(
         goal=goal,
@@ -604,7 +518,7 @@ async def execute_step(state: ResearchState, config: RunnableConfig) -> Dict[str
     step_header = f"\n\n--- Step {current_idx + 1}: {current_step_text} ---\n"
     new_findings = findings + step_header + step_findings
 
-    log_branch(logger, "execute_step", "step_complete", next_step_index=current_idx + 1, findings_length=len(new_findings))
+    logger.debug("BRANCH node=execute_step branch=step_complete next_step_index=%s findings_length=%s", current_idx + 1, len(new_findings))
 
     return {
         "findings": new_findings,
@@ -615,8 +529,7 @@ async def execute_step(state: ResearchState, config: RunnableConfig) -> Dict[str
 
 
 async def reflect(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Evaluate progress and decide whether more research is needed."""
-    log_node_enter(logger, "reflect", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=reflect thread_id=%s", state.get("thread_id", ""))
 
     goal = state.get("goal", "")
     plan = state.get("plan", [])
@@ -647,13 +560,13 @@ async def reflect(state: ResearchState, config: RunnableConfig) -> Dict[str, Any
             "next_focus": "",
         },
     )
-    log_llm_result(logger, "reflect", "reflector_output", data)
+    logger.debug("STATE reflect.reflector_output %s", data)
 
     is_done = bool(data.get("is_done", False))
     next_focus = data.get("next_focus", "")
     reason = data.get("reason", "")
 
-    log_branch(logger, "reflect", "reflection_result", is_done=is_done, next_focus=next_focus, reason=reason)
+    logger.debug("BRANCH node=reflect branch=reflection_result is_done=%s next_focus=%s reason=%s", is_done, next_focus, reason)
 
     status_msg = "Research complete." if is_done else f"Continuing research: {reason}"
 
@@ -665,14 +578,13 @@ async def reflect(state: ResearchState, config: RunnableConfig) -> Dict[str, Any
 
 
 async def finish(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]:
-    """Write and persist the final research answer."""
-    log_node_enter(logger, "finish", thread_id=state.get("thread_id", ""), state=state)
+    logger.info("NODE_ENTER node=finish thread_id=%s", state.get("thread_id", ""))
 
     goal = state.get("goal", "")
     findings = state.get("findings", "")
     thread_id = _get_thread_id(state, config)
 
-    log_branch(logger, "finish", "synthesise_final_answer", findings_length=len(findings), thread_id=thread_id)
+    logger.debug("BRANCH node=finish branch=synthesise_final_answer findings_length=%s thread_id=%s", len(findings), thread_id)
 
     llm = get_llm(strong=True)
     response = await llm.ainvoke(
@@ -687,7 +599,7 @@ async def finish(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]
     if thread_id:
         await save_message_idempotent(thread_id, "assistant", content)
 
-    log_branch(logger, "finish", "final_answer_ready", answer_length=len(content))
+    logger.debug("BRANCH node=finish branch=final_answer_ready answer_length=%s", len(content))
 
     return {
         "final_answer": content,
@@ -700,18 +612,6 @@ async def finish(state: ResearchState, config: RunnableConfig) -> Dict[str, Any]
 # ============================================================================
 
 async def _run_with_tools(messages: List[Any], config: RunnableConfig) -> str:
-    """Run a bounded LLM + tool loop for a single research step.
-
-    The loop:
-        1. Ask the LLM for the next action.
-        2. Persist the assistant message and any tool calls.
-        3. Execute tool calls through the shared ToolNode.
-        4. Persist tool outputs.
-        5. Repeat until the LLM returns a normal response with no tool calls.
-
-    Returns:
-        The final assistant text for the step.
-    """
     current_messages = list(messages)
     thread_id = (
         config.get("configurable", {}).get("thread_id", "")
@@ -719,7 +619,7 @@ async def _run_with_tools(messages: List[Any], config: RunnableConfig) -> str:
     )
 
     for attempt in range(5):
-        log_branch(logger, "_run_with_tools", "llm_turn", attempt=attempt + 1)
+        logger.debug("BRANCH node=_run_with_tools branch=llm_turn attempt=%s", attempt + 1)
 
         response = await _llm_with_tools.ainvoke(current_messages, config=config)
 
@@ -739,10 +639,10 @@ async def _run_with_tools(messages: List[Any], config: RunnableConfig) -> str:
         current_messages.append(response)
 
         if not tool_calls:
-            log_branch(logger, "_run_with_tools", "llm_finished_without_tools", attempt=attempt + 1, content_length=len(content))
+            logger.debug("BRANCH node=_run_with_tools branch=llm_finished_without_tools attempt=%s content_length=%s", attempt + 1, len(content))
             return content
 
-        log_branch(logger, "_run_with_tools", "execute_tools", attempt=attempt + 1, tool_call_count=len(tool_calls))
+        logger.debug("BRANCH node=_run_with_tools branch=execute_tools attempt=%s tool_call_count=%s", attempt + 1, len(tool_calls))
 
         tool_result = await _tool_node.ainvoke({"messages": current_messages}, config)
         tool_messages = tool_result.get("messages", [])
@@ -759,20 +659,11 @@ async def _run_with_tools(messages: List[Any], config: RunnableConfig) -> str:
 
     last = current_messages[-1]
     fallback_content = getattr(last, "content", "") or ""
-    log_branch(logger, "_run_with_tools", "max_attempts_reached", content_length=len(str(fallback_content)))
+    logger.debug("BRANCH node=_run_with_tools branch=max_attempts_reached content_length=%s", len(str(fallback_content)))
     return fallback_content
 
 
 def _parse_json(raw: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse JSON from LLM output, tolerating fenced markdown.
-
-    Args:
-        raw: Raw model output.
-        fallback: Value returned if parsing fails.
-
-    Returns:
-        Parsed dict or the fallback.
-    """
     try:
         text = raw.strip()
         if text.startswith("```"):

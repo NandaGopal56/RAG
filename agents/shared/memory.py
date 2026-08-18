@@ -6,13 +6,15 @@
 
 from typing import Any, Dict, List, Optional
 
-from agents.shared.logging import log_save
+from agents.shared.logging import get_agent_logger
 from agents.shared.storage import (
     add_message     as _add_message,
     add_tool_call   as _add_tool_call,
     update_tool_result as _update_tool_result,
     get_full_thread as _get_full_thread,
 )
+
+logger = get_agent_logger("storage", "saves")
 
 
 def _preview(text: str, limit: int = 120) -> str:
@@ -28,12 +30,9 @@ async def save_tool_call(
 ) -> None:
     """Attach a tool call to an assistant message."""
     tool_name = tool_input.get("name", "unknown")
-    log_save(
-        "tool_call",
-        "insert",
-        message_id=message_id,
-        call_id=call_id,
-        tool=tool_name,
+    logger.info(
+        "SAVE entity=tool_call action=insert message_id=%s call_id=%s tool=%s",
+        message_id, call_id, tool_name,
     )
     await _add_tool_call(
         message_id=message_id,
@@ -48,13 +47,9 @@ async def save_tool_result(
     output: str,
 ) -> None:
     """Store the result of a tool call."""
-    log_save(
-        "tool_result",
-        "update",
-        message_id=message_id,
-        call_id=call_id,
-        output_len=len(output) if output else 0,
-        output_preview=_preview(output) if output else "",
+    logger.info(
+        "SAVE entity=tool_result action=update message_id=%s call_id=%s output_len=%s output_preview=%s",
+        message_id, call_id, len(output) if output else 0, _preview(output) if output else "",
     )
     await _update_tool_result(
         message_id=message_id,
@@ -79,25 +74,16 @@ async def save_message_idempotent(
         last_msg = db_history[-1]
         if last_msg.get("role") == role and last_msg.get("content") == content:
             message_id = last_msg.get("message_id")
-            log_save(
-                "message",
-                "skip_duplicate",
-                thread_id=thread_id,
-                role=role,
-                message_id=message_id,
-                content_len=len(content),
+            logger.info(
+                "SAVE entity=message action=skip_duplicate thread_id=%s role=%s message_id=%s content_len=%s",
+                thread_id, role, message_id, len(content),
             )
             return message_id
 
     message_id = await _add_message(int(thread_id), role, content)
-    log_save(
-        "message",
-        "insert",
-        thread_id=thread_id,
-        role=role,
-        message_id=message_id,
-        content_len=len(content),
-        content_preview=_preview(content),
+    logger.info(
+        "SAVE entity=message action=insert thread_id=%s role=%s message_id=%s content_len=%s content_preview=%s",
+        thread_id, role, message_id, len(content), _preview(content),
     )
     return message_id
 
@@ -145,10 +131,8 @@ async def rebuild_messages_from_db(thread_id: str) -> list:
                         tool_output_str = tool_output
                     loaded_messages.append(ToolMessage(content=tool_output_str, tool_call_id=call_id))
 
-    log_save(
-        "thread",
-        "rebuild_messages",
-        thread_id=thread_id,
-        loaded_count=len(loaded_messages),
+    logger.info(
+        "SAVE entity=thread action=rebuild_messages thread_id=%s loaded_count=%s",
+        thread_id, len(loaded_messages),
     )
     return loaded_messages

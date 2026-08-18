@@ -11,14 +11,7 @@ from agents.shared.checkpointer import load_previous_state, merge_with_new_messa
 
 from agents.base import BaseAgent
 from agents.shared.models import get_classifier_llm
-from agents.shared.logging import (
-    get_agent_logger,
-    log_branch,
-    log_llm_result,
-    log_node_enter,
-    log_node_exit,
-    log_route,
-)
+from agents.shared.logging import get_agent_logger
 
 from .prompts import CLARIFICATION_PREFIX, ROUTER_PROMPT
 from .state import SupervisorState
@@ -42,7 +35,7 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
         thread_id = config.get("configurable", {}).get("thread_id", "") or state.get("thread_id", "")
         preview = (user_input[:200] + "...") if len(user_input) > 200 else user_input
 
-        log_node_enter(logger, "route_request", thread_id=thread_id, state=state, user_input_preview=preview)
+        logger.info("NODE_ENTER node=route_request thread_id=%s user_input_preview=%s", thread_id, preview)
 
         await save_message_idempotent(thread_id, "user", user_input)
         loaded_messages = await rebuild_messages_from_db(thread_id)
@@ -68,7 +61,7 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
                 "needs_clarification": False,
                 "clarification_question": "",
             }
-            log_branch(logger, "route_request", "parse_fallback", raw_preview=preview)
+            logger.debug("BRANCH node=route_request branch=parse_fallback raw_preview=%s", preview)
 
         chosen = data.get("chosen_agent", "personal")
 
@@ -76,18 +69,11 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
             unknown = chosen
             chosen = "personal"
             data["reason"] += f" (unknown agent '{unknown}' requested - fell back to personal)"
-            log_branch(logger, "route_request", "unknown_agent_fallback", unknown_agent=unknown, chosen=chosen)
+            logger.debug("BRANCH node=route_request branch=unknown_agent_fallback unknown_agent=%s chosen=%s", unknown, chosen)
 
-        log_llm_result(
-            logger,
-            "route_request",
-            "routing_decision",
-            {
-                "chosen_agent": chosen,
-                "reason": data.get("reason", ""),
-                "needs_clarification": data.get("needs_clarification", False),
-                "clarification_question": data.get("clarification_question", ""),
-            },
+        logger.debug(
+            "STATE route_request.routing_decision chosen_agent=%s reason=%s needs_clarification=%s clarification_question=%s",
+            chosen, data.get("reason", ""), data.get("needs_clarification", False), data.get("clarification_question", ""),
         )
 
         messages = list(state.get("messages", []))
@@ -105,12 +91,9 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
         except Exception:
             previous_supervisor_state = None
 
-        log_branch(
-            logger,
-            "route_request",
-            "state_merge",
-            previous_agent_state_present=bool(previous_agent_state),
-            previous_supervisor_state_present=bool(previous_supervisor_state),
+        logger.debug(
+            "BRANCH node=route_request branch=state_merge previous_agent_state_present=%s previous_supervisor_state_present=%s",
+            bool(previous_agent_state), bool(previous_supervisor_state),
         )
 
         merged_base = merge_with_new_messages(previous_agent_state, {})
@@ -119,7 +102,7 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
         merged_agent_state = merge_with_new_messages(merged_with_supervisor, new_state_values)
 
         merged_count = len(merged_agent_state.get("messages", [])) if merged_agent_state else 0
-        log_branch(logger, "route_request", "merged", merged_messages_count=merged_count)
+        logger.debug("BRANCH node=route_request branch=merged merged_messages_count=%s", merged_count)
 
         result = {
             "chosen_agent": chosen,
@@ -135,13 +118,9 @@ def make_route_request(agents: Dict[str, BaseAgent], parent_graph=None):
                     continue
                 result[k] = v
 
-        log_node_exit(
-            logger,
-            "route_request",
-            thread_id=thread_id,
-            chosen_agent=chosen,
-            needs_clarification=result["needs_clarification"],
-            routing_reason=result["routing_reason"],
+        logger.info(
+            "NODE_EXIT node=route_request thread_id=%s chosen_agent=%s needs_clarification=%s routing_reason=%s",
+            thread_id, chosen, result["needs_clarification"], result["routing_reason"],
         )
         return result
 
@@ -153,11 +132,11 @@ async def ask_user(state: SupervisorState, config: RunnableConfig) -> Dict[str, 
     question = state.get("clarification_question", "Could you give me more details?")
     message = CLARIFICATION_PREFIX + question
 
-    log_node_enter(logger, "ask_user", thread_id=thread_id, state=state, question=question)
+    logger.info("NODE_ENTER node=ask_user thread_id=%s question=%s", thread_id, question)
 
     await save_message_idempotent(thread_id, "assistant", message)
 
-    log_node_exit(logger, "ask_user", thread_id=thread_id, response_len=len(message))
+    logger.info("NODE_EXIT node=ask_user thread_id=%s response_len=%s", thread_id, len(message))
     return {
         "response": message,
         "messages": [AIMessage(content=message)],
@@ -171,22 +150,14 @@ def what_to_do(state: SupervisorState) -> str:
 
     if needs_clarification:
         target = "ask_user"
-        log_route(
-            logger,
-            "what_to_do",
-            target,
-            reason="router requested clarification",
-            thread_id=thread_id,
-            chosen_agent=chosen,
+        logger.info(
+            "ROUTE source=what_to_do target=%s reason=router requested clarification thread_id=%s chosen_agent=%s",
+            target, thread_id, chosen,
         )
         return target
 
-    log_route(
-        logger,
-        "what_to_do",
-        chosen,
-        reason=state.get("routing_reason", ""),
-        thread_id=thread_id,
-        needs_clarification=needs_clarification,
+    logger.info(
+        "ROUTE source=what_to_do target=%s reason=%s thread_id=%s needs_clarification=%s",
+        chosen, state.get("routing_reason", ""), thread_id, needs_clarification,
     )
     return chosen
