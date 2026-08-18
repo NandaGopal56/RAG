@@ -195,7 +195,8 @@ Return JSON only:
 """
 
 
-GOAL_CONFIRMATION_MESSAGE = """Before I start planning, please confirm the research goal.
+GOAL_CONFIRMATION_MESSAGE = """[Goal Confirmation]
+Before I start planning, please confirm the research goal.
 
 **Original question:** {original_question}
 
@@ -209,7 +210,8 @@ Reply with:
 """
 
 
-PLAN_CONFIRMATION_MESSAGE = """Here is the research plan I’ve put together for:
+PLAN_CONFIRMATION_MESSAGE = """[Plan Confirmation]
+Here is the research plan I’ve put together for:
 
 **{goal}**
 

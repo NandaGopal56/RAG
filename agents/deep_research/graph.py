@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Set
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -226,11 +226,33 @@ class DeepResearchAgent(BaseAgent):
     ) -> AsyncIterator[Dict[str, Any]]:
         async with ensure_invocation_session("deep_research", thread_id, mode="stream"):
             run_input, cfg = await self._run(task, thread_id, config)
-            async for update in self.graph.astream(run_input, config=cfg, stream_mode="updates"):
-                for node_name, node_update in update.items():
-                    logger.debug(
-                        "STREAM_UPDATE agent=deep_research thread=%s node=%s update_keys=%s",
-                        thread_id, node_name, list(node_update.keys()) if isinstance(node_update, dict) else None,
-                    )
-                    yield {"node": node_name, "update": node_update}
+
+            _STREAM_NODES = {
+                "check_goal_confirmation",
+                "check_plan_confirmation",
+                "finish",
+            }
+
+            yielded: Set[str] = set()
+
+            async for message, metadata in self.graph.astream(
+                run_input,
+                config=cfg,
+                stream_mode="messages",
+            ):
+                node = metadata.get("langgraph_node", "")
+                if node in _STREAM_NODES and isinstance(message, AIMessage) and message.content:
+                    yielded.add(message.content)
+                    yield message.content
+
+            if await self._is_interrupted(cfg):
+                from agents.shared.memory import load_thread
+
+                db_messages = await load_thread(thread_id)
+                for msg in db_messages:
+                    content = msg.get("content", "")
+                    if msg.get("role") == "assistant" and content and content not in yielded:
+                        yield content
+                        yielded.add(content)
+
             logger.info("INVOKE_END agent=deep_research thread=%s mode=stream", thread_id)
